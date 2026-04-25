@@ -1,0 +1,46 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# sqlite request log + WAL/SHM sidecars
+requests.db
+requests.db-journal
+requests.db-wal
+requests.db-shm
+
+dict_fts.db
+JMdict_e.gz
+JMdict_e.xml
+mozc_dict.db
+jmdict.db
