@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 
-const db = new Database("mozc_dict.db", { readonly: true });
+const db = new Database(Bun.env.MOZC_DB_PATH ?? "mozc_dict.db", { readonly: true });
 const jmdict = new Database("jmdict.db", { readonly: true });
 
 const byReading = db.query<{ surface: string; cost: number }, [string]>(

@@ -2,6 +2,8 @@ import { convert } from "./ime";
 import { logRequest } from "./requests";
 import { suggestEn, getWord } from "./dict";
 import { segment } from "./segmenter";
+import { translate } from "./translate";
+import { analyzeJapaneseSentence } from "./grok";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -94,7 +96,39 @@ const server = Bun.serve({
         return json(enriched);
       },
     },
+    "/api/analyse": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      POST: async (req) => {
+        const { sentence, intent } = (await req.json()) as {
+          sentence?: string;
+          intent?: string;
+        };
+        if (!sentence) return json({ error: "missing sentence in body" }, { status: 400 });
+        try {
+          return json(await analyzeJapaneseSentence(sentence, { intent }));
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
+      },
+    },
     "/health": () => json({ ok: true }),
+    "/api/translate": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const q = url.searchParams.get("q");
+        const target = url.searchParams.get("l") as "ja" | "en-GB" | null;
+        if (!q) return json({ error: "missing ?q=" }, { status: 400 });
+        return json(await translate(q, target ?? "ja"));
+      },
+      POST: async (req) => {
+        const body = await req.text();
+        if (!body.trim()) return json({ error: "missing body" }, { status: 400 });
+        const url = new URL(req.url);
+        const target = url.searchParams.get("l") as "ja" | "en-GB" | null;
+        return json(await translate(body, target ?? "ja"));
+      },
+    },
   },
   fetch: () => new Response("Not Found", { status: 404, headers: CORS_HEADERS }),
   development: { hmr: true, console: true },

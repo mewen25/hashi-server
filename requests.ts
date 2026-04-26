@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 
-const db = new Database("requests.db");
+const db = new Database(Bun.env.REQUESTS_DB_PATH ?? "requests.db");
 db.exec("PRAGMA journal_mode = WAL");
 db.exec(`
   CREATE TABLE IF NOT EXISTS requests (
