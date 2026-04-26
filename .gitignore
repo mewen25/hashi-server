@@ -33,6 +33,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
+.venv
+
 # sqlite request log + WAL/SHM sidecars
 requests.db
 requests.db-journal

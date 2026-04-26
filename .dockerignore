@@ -1,0 +1,23 @@
+.git
+.gitignore
+.venv
+node_modules
+.claude
+.idea
+.DS_Store
+
+# huge raw sources — only the built .db files are needed at runtime
+JMdict_e.xml
+JMdict_e.gz
+
+# regenerated inside the Dockerfile's dict-builder stage
+jmdict.db
+dict_fts.db
+
+# local-only sqlite WAL/SHM sidecars (rebuilt at runtime)
+requests.db-wal
+requests.db-shm
+
+Dockerfile
+.dockerignore
+README.md
