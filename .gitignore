@@ -46,3 +46,7 @@ JMdict_e.gz
 JMdict_e.xml
 mozc_dict.db
 jmdict.db
+cards.db
+cards.db-journal
+cards.db-wal
+cards.db-shm
