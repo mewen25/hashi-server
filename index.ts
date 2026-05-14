@@ -4,6 +4,7 @@ import { suggestEn, getWord } from "./dict";
 import { segment } from "./segmenter";
 import { translate } from "./translate";
 import { analyzeJapaneseSentence } from "./grok";
+import { analyzePronunciation } from "./pronunciation";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -106,6 +107,50 @@ const server = Bun.serve({
         if (!sentence) return json({ error: "missing sentence in body" }, { status: 400 });
         try {
           return json(await analyzeJapaneseSentence(sentence, { intent }));
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
+      },
+    },
+    "/api/pronounce": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const sentence = url.searchParams.get("q");
+        const take = Number(url.searchParams.get("take") ?? "1");
+        if (!sentence) return json({ error: "missing ?q=" }, { status: 400 });
+        try {
+          return json(await analyzePronunciation(sentence, { take }));
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
+      },
+      POST: async (req) => {
+        const contentType = req.headers.get("content-type") ?? "";
+        try {
+          if (contentType.startsWith("multipart/form-data")) {
+            const form = await req.formData();
+            const sentence = String(form.get("sentence") ?? form.get("q") ?? "");
+            if (!sentence) return json({ error: "missing sentence" }, { status: 400 });
+            const take = Number(form.get("take") ?? "1");
+            const audioField = form.get("audio");
+            let audio;
+            if (audioField instanceof Blob && audioField.size > 0) {
+              audio = {
+                bytes: new Uint8Array(await audioField.arrayBuffer()),
+                contentType: audioField.type,
+              };
+            }
+            return json(await analyzePronunciation(sentence, { take, audio }));
+          }
+          const { sentence, q, take } = (await req.json()) as {
+            sentence?: string;
+            q?: string;
+            take?: number;
+          };
+          const target = sentence ?? q;
+          if (!target) return json({ error: "missing sentence" }, { status: 400 });
+          return json(await analyzePronunciation(target, { take }));
         } catch (err) {
           return json({ error: (err as Error).message }, { status: 500 });
         }
