@@ -16,6 +16,7 @@ import {
   updateCard,
   type Rating,
 } from "./cards";
+import { analyzePronunciation } from "./pronunciation";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -219,6 +220,50 @@ const server = Bun.serve({
         const id = Number(req.params.id);
         if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
         return json(reviewHistory(id));
+      },
+    },
+    "/api/pronounce": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const sentence = url.searchParams.get("q");
+        const take = Number(url.searchParams.get("take") ?? "1");
+        if (!sentence) return json({ error: "missing ?q=" }, { status: 400 });
+        try {
+          return json(await analyzePronunciation(sentence, { take }));
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
+      },
+      POST: async (req) => {
+        const contentType = req.headers.get("content-type") ?? "";
+        try {
+          if (contentType.startsWith("multipart/form-data")) {
+            const form = await req.formData();
+            const sentence = String(form.get("sentence") ?? form.get("q") ?? "");
+            if (!sentence) return json({ error: "missing sentence" }, { status: 400 });
+            const take = Number(form.get("take") ?? "1");
+            const audioField = form.get("audio");
+            let audio;
+            if (audioField instanceof Blob && audioField.size > 0) {
+              audio = {
+                bytes: new Uint8Array(await audioField.arrayBuffer()),
+                contentType: audioField.type,
+              };
+            }
+            return json(await analyzePronunciation(sentence, { take, audio }));
+          }
+          const { sentence, q, take } = (await req.json()) as {
+            sentence?: string;
+            q?: string;
+            take?: number;
+          };
+          const target = sentence ?? q;
+          if (!target) return json({ error: "missing sentence" }, { status: 400 });
+          return json(await analyzePronunciation(target, { take }));
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
       },
     },
     "/health": () => json({ ok: true }),
