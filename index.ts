@@ -297,6 +297,22 @@ const server = Bun.serve({
     },
     "/api/sound": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      HEAD: async (req) => {
+        const q = new URL(req.url).searchParams.get("q");
+        if (!q) return json({ error: "missing ?q=" }, { status: 400 });
+        const entry = lookupOutputEntry(q);
+        if (!entry?.sound) return json({ error: "not found" }, { status: 404 });
+        try {
+          const file = Bun.file(entry.sound);
+          const exists = await file.exists();
+          if (!exists) return json({ error: "file not found" }, { status: 404 });
+          return new Response(null, {
+            headers: { "Content-Type": "audio/mpeg", ...CORS_HEADERS },
+          });
+        } catch {
+          return json({ error: "failed to read file" }, { status: 500 });
+        }
+      },
       GET: async (req) => {
         const q = new URL(req.url).searchParams.get("q");
         if (!q) return json({ error: "missing ?q=" }, { status: 400 });
@@ -316,6 +332,21 @@ const server = Bun.serve({
     },
     "/api/sounds": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      HEAD: async (req) => {
+        const q = new URL(req.url).searchParams.get("q");
+        if (!q) return json({ error: "missing ?q=" }, { status: 400 });
+        const morphemes = await segment(q);
+        const seen = new Set<string>();
+        const result: { word: string; sound: string }[] = [];
+        for (const m of morphemes) {
+          const word = m.dictionary_form || m.surface;
+          if (seen.has(word)) continue;
+          seen.add(word);
+          const entry = lookupOutputEntry(word);
+          if (entry?.sound) result.push({ word, sound: entry.sound });
+        }
+        return json(result);
+      },
       GET: async (req) => {
         const q = new URL(req.url).searchParams.get("q");
         if (!q) return json({ error: "missing ?q=" }, { status: 400 });
