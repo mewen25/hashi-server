@@ -1,5 +1,22 @@
 import { Database } from "bun:sqlite";
 
+interface RawEntry {
+  p?: string;
+  ro?: string;
+  alt?: string;
+  en?: string;
+  sound?: string | null;
+}
+
+interface OutputEntry {
+  id: string;
+  p: string;
+  ro: string;
+  alt: string;
+  en: string;
+  sound?: string;
+}
+
 const jmdict = new Database("jmdict.db", { readonly: true });
 const ftsDb = new Database("dict_fts.db", { readonly: true });
 
@@ -10,14 +27,6 @@ const byWord = jmdict.query<
   "SELECT kanji, reading, gloss, pos FROM entries WHERE kanji = ? OR reading = ? LIMIT 1"
 );
 
-// Composite score, lower = better. Sums:
-//   - priority (1=most common in JMdict's wordfreq, 9999=untagged)
-//   - +24 if the term isn't a complete item in top_glosses (top 3 glosses of
-//          sense 1) — pushes 玉's 31st-sense "beautiful" below 綺麗.
-//   - +24 if the term isn't the entry's first gloss (Jisho-style headword boost)
-//   - +8  if the term doesn't appear as a complete `; `-separated gloss item
-//          anywhere (so "beautiful woman" doesn't match "beautiful")
-//   - +32 if the entry has no kanji form (demotes katakana-only loanwords)
 const suggestStmt = ftsDb.query<
   {
     kanji: string;
@@ -48,10 +57,56 @@ const suggestStmt = ftsDb.query<
   LIMIT 10
 `);
 
+let raw: Record<string, RawEntry> = {};
+try {
+  raw = JSON.parse(await Bun.file("output.json").text());
+} catch (e) {
+  console.error("Failed to load output.json:", e);
+}
+
+const entries: OutputEntry[] = [];
+const byAlt = new Map<string, OutputEntry>();
+const byReading = new Map<string, OutputEntry>();
+
+for (const [id, val] of Object.entries(raw)) {
+  if (!val.p) continue;
+  const alt = val.alt || val.p;
+  const entry: OutputEntry = {
+    id,
+    p: val.p,
+    ro: val.ro || "",
+    alt,
+    en: val.en || "",
+    sound: val.sound || undefined,
+  };
+  entries.push(entry);
+  // For duplicate alt/reading, prefer the entry that has a sound file
+  const existingAlt = byAlt.get(alt);
+  if (!existingAlt || (!existingAlt.sound && entry.sound)) {
+    byAlt.set(alt, entry);
+  }
+  const existingReading = byReading.get(val.p);
+  if (!existingReading || (!existingReading.sound && entry.sound)) {
+    byReading.set(val.p, entry);
+  }
+}
+
+export function lookupOutputEntry(text: string): OutputEntry | null {
+  const norm = text.trim();
+  return byAlt.get(norm) ?? byReading.get(norm) ?? null;
+}
+
 export interface EnSuggestion {
   jp: string;
   r: string;
   en: string;
+}
+
+export interface WordEntry {
+  kanji: string;
+  reading: string;
+  gloss: string;
+  pos: string;
 }
 
 function ftsQuery(q: string): string {
@@ -65,24 +120,66 @@ function ftsQuery(q: string): string {
 
 export async function suggestEn(q: string): Promise<EnSuggestion[]> {
   const norm = q.toLowerCase().trim();
-  const fts = ftsQuery(q);
-  if (!fts) return [];
-  const rows = suggestStmt.all(fts, norm, norm, norm);
-  return rows.map((row) => ({
-    jp: row.kanji,
-    r: row.reading,
-    en: row.gloss,
-  }));
-}
+  if (!norm) return [];
+  const terms = norm.split(/[^a-z0-9]+/).filter(Boolean);
+  if (!terms.length) return [];
 
-export interface WordEntry {
-  kanji: string;
-  reading: string;
-  gloss: string;
-  pos: string;
+  // output.json results (prioritised)
+  const local = entries
+    .map(e => {
+      if (!e.en) return null;
+      const en = e.en.toLowerCase();
+      if (!terms.every(t => en.includes(t))) return null;
+
+      let score = terms.reduce((s, t) => {
+        if (en.startsWith(t)) return s + 1;
+        if (en.includes(` ${t}`) || en.includes(`; ${t}`)) return s + 2;
+        if (en === t) return s + 0;
+        return s + 3;
+      }, 0);
+
+      score += en.length / 100;
+
+      return { jp: e.alt || e.p, r: e.ro || "", en: e.en, score };
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null)
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 10)
+    .map(({ jp, r, en }) => ({ jp, r, en }));
+
+  // JMdict FTS results
+  const fts = ftsQuery(q);
+  const jmdictResults = fts
+    ? suggestStmt.all(fts, norm, norm, norm).map((row) => ({
+        jp: row.kanji,
+        r: row.reading,
+        en: row.gloss,
+      }))
+    : [];
+
+  // Deduplicate: prefer output.json entries, append JMdict ones not already present
+  const seen = new Set(local.map((s) => s.jp + s.r));
+  const combined = [...local];
+  for (const r of jmdictResults) {
+    if (!seen.has(r.jp + r.r)) {
+      combined.push(r);
+      seen.add(r.jp + r.r);
+    }
+  }
+
+  return combined.slice(0, 10);
 }
 
 export async function getWord(word: string): Promise<WordEntry | null> {
+  const entry = lookupOutputEntry(word);
+  if (entry) {
+    return {
+      kanji: entry.alt,
+      reading: entry.p,
+      gloss: entry.en || "",
+      pos: "",
+    };
+  }
   const row = byWord.get(word, word);
   if (!row) return null;
   return {

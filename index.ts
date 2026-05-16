@@ -1,9 +1,9 @@
 import { convert } from "./ime";
 import { logRequest } from "./requests";
-import { suggestEn, getWord } from "./dict";
+import { suggestEn, getWord, lookupOutputEntry } from "./dict";
 import { segment } from "./segmenter";
 import { translate } from "./translate";
-import { analyzeJapaneseSentence } from "./grok";
+import { analyzeJapaneseSentence } from "./claude";
 import {
   createCard,
   deleteCard,
@@ -16,7 +16,21 @@ import {
   updateCard,
   type Rating,
 } from "./cards";
-import { analyzePronunciation } from "./pronunciation";
+import { analyzePronunciation, type PronunciationAnalysis } from "./pronunciation2";
+
+const PRONUNCIATION_LOG_PATH = Bun.env.PRONUNCIATION_LOG ?? "pronunciation.log.jsonl";
+const pronunciationLog = Bun.file(PRONUNCIATION_LOG_PATH).writer();
+
+async function logPronunciation(
+  source: "GET" | "POST-json" | "POST-multipart",
+  input: { sentence: string; take: number; audio?: { bytes: number; contentType?: string } },
+  result: PronunciationAnalysis,
+): Promise<void> {
+  const entry = { ts: new Date().toISOString(), source, input, result };
+  console.log("[pronounce]", JSON.stringify(entry));
+  pronunciationLog.write(JSON.stringify(entry) + "\n");
+  await pronunciationLog.flush();
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -230,7 +244,9 @@ const server = Bun.serve({
         const take = Number(url.searchParams.get("take") ?? "1");
         if (!sentence) return json({ error: "missing ?q=" }, { status: 400 });
         try {
-          return json(await analyzePronunciation(sentence, { take }));
+          const result = await analyzePronunciation(sentence, { take });
+          await logPronunciation("GET", { sentence, take }, result);
+          return json(result);
         } catch (err) {
           return json({ error: (err as Error).message }, { status: 500 });
         }
@@ -251,7 +267,17 @@ const server = Bun.serve({
                 contentType: audioField.type,
               };
             }
-            return json(await analyzePronunciation(sentence, { take, audio }));
+            const result = await analyzePronunciation(sentence, { take, audio });
+            await logPronunciation(
+              "POST-multipart",
+              {
+                sentence,
+                take,
+                audio: audio ? { bytes: audio.bytes.length, contentType: audio.contentType } : undefined,
+              },
+              result,
+            );
+            return json(result);
           }
           const { sentence, q, take } = (await req.json()) as {
             sentence?: string;
@@ -260,10 +286,50 @@ const server = Bun.serve({
           };
           const target = sentence ?? q;
           if (!target) return json({ error: "missing sentence" }, { status: 400 });
-          return json(await analyzePronunciation(target, { take }));
+          const takeN = Number(take ?? 1);
+          const result = await analyzePronunciation(target, { take: takeN });
+          await logPronunciation("POST-json", { sentence: target, take: takeN }, result);
+          return json(result);
         } catch (err) {
           return json({ error: (err as Error).message }, { status: 500 });
         }
+      },
+    },
+    "/api/sound": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const q = new URL(req.url).searchParams.get("q");
+        if (!q) return json({ error: "missing ?q=" }, { status: 400 });
+        const entry = lookupOutputEntry(q);
+        if (!entry?.sound) return json({ error: "not found" }, { status: 404 });
+        try {
+          const file = Bun.file(entry.sound);
+          const exists = await file.exists();
+          if (!exists) return json({ error: "file not found" }, { status: 404 });
+          return new Response(file, {
+            headers: { "Content-Type": "audio/mpeg", ...CORS_HEADERS },
+          });
+        } catch {
+          return json({ error: "failed to read file" }, { status: 500 });
+        }
+      },
+    },
+    "/api/sounds": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const q = new URL(req.url).searchParams.get("q");
+        if (!q) return json({ error: "missing ?q=" }, { status: 400 });
+        const morphemes = await segment(q);
+        const seen = new Set<string>();
+        const result: { word: string; sound: string }[] = [];
+        for (const m of morphemes) {
+          const word = m.dictionary_form || m.surface;
+          if (seen.has(word)) continue;
+          seen.add(word);
+          const entry = lookupOutputEntry(word);
+          if (entry?.sound) result.push({ word, sound: entry.sound });
+        }
+        return json(result);
       },
     },
     "/health": () => json({ ok: true }),
