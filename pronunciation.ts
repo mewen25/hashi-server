@@ -10,7 +10,7 @@
 // so the drawer always has something to render.
 
 import { segment } from "./segmenter";
-import { loadNativeAudio, phraseAudioPath } from "./nativeAudio";
+import { describeResolved, loadNativeAudio, resolveNative } from "./nativeAudio";
 import {
   bucketBytes,
   bucketRms,
@@ -54,6 +54,11 @@ export interface PronunciationAnalysis {
   nativeAudioAvailable: boolean;
   /** URL the client can hit to play the native reference, if available. */
   nativeAudioUrl?: string;
+  /** Manifest IDs the native reference was assembled from (one for a
+   *  whole-phrase match, several for a stitched per-word match). */
+  nativeIds?: string[];
+  /** Meaning(s) from the manifest entry/entries, joined with " · ". */
+  nativeMeaning?: string;
 }
 
 export interface AnalyzeAudio {
@@ -305,9 +310,13 @@ export async function analyzePronunciation(
   const seed = hashSeed(sentence);
   const takeSeed = hashSeed(`${sentence}#${take}`);
 
-  // 1. Native reference: real audio if we have it, otherwise synthetic.
-  const nativeDecoded = await loadNativeAudio(sentence, morphemes);
+  // 1. Native reference: real audio if the manifest covers this, else
+  //    synthetic. Resolve manifest entries first so we can surface them
+  //    on the response even if the audio file itself is missing on disk.
+  const resolved = await resolveNative(sentence, morphemes);
+  const nativeDecoded = resolved ? await loadNativeAudio(sentence, morphemes) : null;
   const nativeAudioAvailable = nativeDecoded !== null;
+  const describe = resolved ? describeResolved(resolved) : null;
 
   const nativeWaveform = nativeDecoded
     ? bucketRms(nativeDecoded.samples, WAVE_BARS)
@@ -363,12 +372,10 @@ export async function analyzePronunciation(
     nativeAudioUrl: nativeAudioAvailable
       ? `/api/pronounce/native?q=${encodeURIComponent(sentence)}`
       : undefined,
+    nativeIds: describe?.ids,
+    nativeMeaning: describe?.meaning,
   };
 }
-
-// Re-exported so the route handler can hint at where the file should live
-// when one is missing.
-export { phraseAudioPath };
 
 if (import.meta.main) {
   const result = await analyzePronunciation("週末は友達と京都へ行きます。", { take: 3 });
