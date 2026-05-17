@@ -10,7 +10,12 @@
 // so the drawer always has something to render.
 
 import { segment } from "./segmenter";
-import { describeResolved, loadNativeAudio, resolveNative } from "./nativeAudio";
+import {
+  describeResolved,
+  hasNativeFiles,
+  loadNativeAudio,
+  resolveNative,
+} from "./nativeAudio";
 import {
   bucketBytes,
   bucketRms,
@@ -50,14 +55,17 @@ export interface PronunciationAnalysis {
   phonemes: MoraScore[];
   /** 0–100 overall score; the drawer can choose to surface it. */
   overall: number;
-  /** True when nativeWaveform/pitch/duration came from a real recording. */
+  /** True when a playable native recording exists at nativeAudioUrl. The
+   *  analyser's waveform/pitch shapes may still be synthetic (we don't
+   *  decode MP3 server-side); this flag just tells the client to surface
+   *  the play button. */
   nativeAudioAvailable: boolean;
   /** URL the client can hit to play the native reference, if available. */
   nativeAudioUrl?: string;
-  /** Manifest IDs the native reference was assembled from (one for a
+  /** output.json IDs the native reference was assembled from (one for a
    *  whole-phrase match, several for a stitched per-word match). */
   nativeIds?: string[];
-  /** Meaning(s) from the manifest entry/entries, joined with " · ". */
+  /** Meaning(s) from the matched entry/entries, joined with " · ". */
   nativeMeaning?: string;
 }
 
@@ -310,12 +318,14 @@ export async function analyzePronunciation(
   const seed = hashSeed(sentence);
   const takeSeed = hashSeed(`${sentence}#${take}`);
 
-  // 1. Native reference: real audio if the manifest covers this, else
-  //    synthetic. Resolve manifest entries first so we can surface them
-  //    on the response even if the audio file itself is missing on disk.
+  // 1. Native reference: look up the manifest entry/entries first so we
+  //    can surface IDs + meaning on the response. nativeAudioAvailable
+  //    reflects whether the actual MP3(s) exist on disk so the client
+  //    knows to offer playback. nativeDecoded stays null while we have
+  //    no MP3 codec; the synthetic fallback below renders the waveform.
   const resolved = await resolveNative(sentence, morphemes);
+  const nativeAudioAvailable = resolved !== null && (await hasNativeFiles(resolved));
   const nativeDecoded = resolved ? await loadNativeAudio(sentence, morphemes) : null;
-  const nativeAudioAvailable = nativeDecoded !== null;
   const describe = resolved ? describeResolved(resolved) : null;
 
   const nativeWaveform = nativeDecoded
