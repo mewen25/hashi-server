@@ -98,7 +98,6 @@ async function* streamClaude(
     "claude",
     "-p",
     userPrompt,
-    "--bare",
     "--system-prompt", systemPrompt,
     "--json-schema", JSON.stringify(RESPONSE_SCHEMA),
     "--output-format", "stream-json",
@@ -113,6 +112,12 @@ async function* streamClaude(
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDelta = false;
+  // With --json-schema, the CLI wraps structured output in a StructuredOutput
+  // tool call (deltas of type input_json_delta → `partial_json`) AND then
+  // echoes the same JSON back as plain text_delta on a follow-up turn. Lock
+  // onto whichever stream type arrives first and ignore the other, otherwise
+  // the buffer ends up containing the JSON twice and won't parse.
+  let streamMode: "partial_json" | "text" | null = null;
 
   for await (const chunk of proc.stdout as unknown as AsyncIterable<Uint8Array>) {
     buffer += decoder.decode(chunk, { stream: true });
@@ -131,10 +136,18 @@ async function* streamClaude(
 
       if (event.type === "stream_event" && event.event?.type === "content_block_delta") {
         const delta = event.event.delta;
-        const text = delta?.text ?? delta?.partial_json;
-        if (text) {
-          sawDelta = true;
-          yield text;
+        if (delta?.partial_json !== undefined) {
+          if (streamMode === null) streamMode = "partial_json";
+          if (streamMode === "partial_json") {
+            sawDelta = true;
+            yield delta.partial_json;
+          }
+        } else if (delta?.text !== undefined) {
+          if (streamMode === null) streamMode = "text";
+          if (streamMode === "text") {
+            sawDelta = true;
+            yield delta.text;
+          }
         }
       } else if (!sawDelta && event.type === "assistant" && event.message?.content) {
         for (const block of event.message.content) {
