@@ -1,13 +1,30 @@
 // Pronunciation analyser — produces the data the "Speak · pronunciation drawer"
 // renders: target phrase split into morae, native vs your pitch contour,
 // native + your waveform bars, per-mora confidence scores, and timing.
+//
+// Native reference comes from a library of pre-recorded WAVs (see
+// nativeAudio.ts). When the user submits a take, we decode it the same way
+// and score them by comparing the user's bucketed RMS + pitch contour
+// against the native's, sliced per mora. If a native recording is missing
+// or the user hasn't recorded yet we fall back to deterministic stand-ins
+// so the drawer always has something to render.
 
 import { segment } from "./segmenter";
+import { loadNativeAudio, phraseAudioPath } from "./nativeAudio";
+import {
+  bucketBytes,
+  bucketRms,
+  decodeWav,
+  isWav,
+  pitchContour,
+  type DecodedAudio,
+  type PitchPoint,
+} from "./audioDecode";
 
 const WAVE_BARS = 56;
 const PITCH_POINTS = 10;
 
-export interface PitchPoint { x: number; y: number; }
+export type { PitchPoint };
 
 export interface MoraScore {
   /** Romanised mora label shown under the bar, e.g. "shi", "kyō". */
@@ -33,6 +50,10 @@ export interface PronunciationAnalysis {
   phonemes: MoraScore[];
   /** 0–100 overall score; the drawer can choose to surface it. */
   overall: number;
+  /** True when nativeWaveform/pitch/duration came from a real recording. */
+  nativeAudioAvailable: boolean;
+  /** URL the client can hit to play the native reference, if available. */
+  nativeAudioUrl?: string;
 }
 
 export interface AnalyzeAudio {
@@ -48,7 +69,7 @@ export interface AnalyzeOptions {
   audio?: AnalyzeAudio;
 }
 
-// ─── deterministic helpers ──────────────────────────────────────────────────
+// ─── deterministic helpers (fallback when no audio is available) ────────────
 
 function hashSeed(s: string): number {
   let h = 2166136261;
@@ -67,7 +88,7 @@ function lcg(seed: number) {
   };
 }
 
-function bars(seed: number, n: number, ampScale = 1): number[] {
+function syntheticBars(seed: number, n: number, ampScale = 1): number[] {
   const rnd = lcg(seed);
   const out: number[] = [];
   for (let i = 0; i < n; i++) {
@@ -77,16 +98,15 @@ function bars(seed: number, n: number, ampScale = 1): number[] {
   return out;
 }
 
-function pitchCurve(seed: number, opts: { drift: number; noise: number }): PitchPoint[] {
+function syntheticPitch(seed: number, opts: { drift: number; noise: number }): PitchPoint[] {
   const rnd = lcg(seed);
   const points: PitchPoint[] = [];
   for (let i = 0; i < PITCH_POINTS; i++) {
     const x = i / (PITCH_POINTS - 1);
-    // Gentle sinusoidal contour + per-take drift toward the reference.
     const base = 0.45 + 0.2 * Math.sin(x * Math.PI * 1.4 + 0.3);
     const noise = (rnd() - 0.5) * opts.noise;
     const drift = (0.5 - x) * opts.drift;
-    points.push({ x: +x.toFixed(2), y: clamp01(base + noise + drift) });
+    points.push({ x: +x.toFixed(2), y: +clamp01(base + noise + drift).toFixed(3) });
   }
   return points;
 }
@@ -149,7 +169,7 @@ function moraSplit(reading: string): Mora[] {
   while (i < kana.length) {
     const pair = kana.slice(i, i + 2);
     if (DIGRAPHS[pair]) {
-      out.push({ kana: pair, phoneme: DIGRAPHS[pair] });
+      out.push({ kana: pair, phoneme: DIGRAPHS[pair]! });
       i += 2;
       continue;
     }
@@ -173,120 +193,96 @@ function moraSplit(reading: string): Mora[] {
   return out;
 }
 
-// ─── audio decoding ─────────────────────────────────────────────────────────
+// ─── user-audio decoding ────────────────────────────────────────────────────
 
-function isWav(bytes: Uint8Array): boolean {
-  return bytes.length >= 12 &&
-    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && // "RIFF"
-    bytes[8] === 0x57 && bytes[9] === 0x41 && bytes[10] === 0x56 && bytes[11] === 0x45; // "WAVE"
+interface TakeShape {
+  waveform: number[];
+  duration: number;
+  pitch: PitchPoint[];
+  decoded: DecodedAudio | null;
 }
 
-interface DecodedAudio { samples: Float32Array; sampleRate: number; }
-
-function decodeWav(bytes: Uint8Array): DecodedAudio | null {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let offset = 12;
-  let sampleRate = 0;
-  let bitsPerSample = 16;
-  let channels = 1;
-  let dataStart = -1;
-  let dataLen = 0;
-  while (offset + 8 <= bytes.length) {
-    const id = String.fromCharCode(bytes[offset] ?? 0, bytes[offset + 1] ?? 0, bytes[offset + 2] ?? 0, bytes[offset + 3] ?? 0);
-    const size = view.getUint32(offset + 4, true);
-    if (id === "fmt ") {
-      channels = view.getUint16(offset + 10, true);
-      sampleRate = view.getUint32(offset + 12, true);
-      bitsPerSample = view.getUint16(offset + 22, true);
-    } else if (id === "data") {
-      dataStart = offset + 8;
-      dataLen = size;
-      break;
-    }
-    offset += 8 + size + (size & 1);
-  }
-  if (dataStart < 0 || !sampleRate) return null;
-
-  const bytesPerSample = bitsPerSample / 8;
-  const frameCount = Math.floor(dataLen / (bytesPerSample * channels));
-  const samples = new Float32Array(frameCount);
-  for (let i = 0; i < frameCount; i++) {
-    const o = dataStart + i * bytesPerSample * channels;
-    let s = 0;
-    if (bitsPerSample === 16) s = view.getInt16(o, true) / 32768;
-    else if (bitsPerSample === 8) s = ((bytes[o] ?? 128) - 128) / 128;
-    else if (bitsPerSample === 32) s = view.getFloat32(o, true);
-    samples[i] = s;
-  }
-  return { samples, sampleRate };
-}
-
-function bucketRms(samples: Float32Array, buckets: number): number[] {
-  const out: number[] = new Array(buckets);
-  const size = Math.max(1, Math.floor(samples.length / buckets));
-  let peak = 0;
-  for (let b = 0; b < buckets; b++) {
-    const start = b * size;
-    const end = Math.min(samples.length, start + size);
-    let sum = 0;
-    for (let i = start; i < end; i++) { const v = samples[i] ?? 0; sum += v * v; }
-    const rms = end > start ? Math.sqrt(sum / (end - start)) : 0;
-    out[b] = rms;
-    if (rms > peak) peak = rms;
-  }
-  if (peak === 0) return out.map(() => 0.08);
-  return out.map(v => Math.max(0.08, v / peak));
-}
-
-// For compressed audio we can't decode without a full codec — fall back to
-// a magnitude estimate from the raw bytes so the drawer still gets a shape.
-function bucketBytes(bytes: Uint8Array, buckets: number): number[] {
-  const out: number[] = new Array(buckets);
-  const size = Math.max(1, Math.floor(bytes.length / buckets));
-  let peak = 0;
-  for (let b = 0; b < buckets; b++) {
-    const start = b * size;
-    const end = Math.min(bytes.length, start + size);
-    let sum = 0;
-    for (let i = start; i < end; i++) {
-      const v = (bytes[i] ?? 128) - 128;
-      sum += v * v;
-    }
-    const rms = end > start ? Math.sqrt(sum / (end - start)) : 0;
-    out[b] = rms;
-    if (rms > peak) peak = rms;
-  }
-  if (peak === 0) return out.map(() => 0.08);
-  return out.map(v => Math.max(0.08, v / peak));
-}
-
-function waveformFromAudio(audio: AnalyzeAudio): { bars: number[]; duration: number } {
+function shapeFromUserAudio(audio: AnalyzeAudio, fallbackSeed: number): TakeShape {
   if (isWav(audio.bytes)) {
     const decoded = decodeWav(audio.bytes);
     if (decoded) {
       return {
-        bars: bucketRms(decoded.samples, WAVE_BARS),
+        waveform: bucketRms(decoded.samples, WAVE_BARS),
         duration: decoded.samples.length / decoded.sampleRate,
+        pitch: pitchContour(decoded, PITCH_POINTS),
+        decoded,
       };
     }
   }
-  // ~32 kbps voice ≈ 4 KB/s; rough duration estimate keeps the offset readout sane.
+  // Non-WAV compressed audio: we can't decode without a codec, so estimate
+  // a rough envelope from raw bytes and synthesise a plausible pitch curve
+  // so the drawer still gets something coherent.
   return {
-    bars: bucketBytes(audio.bytes, WAVE_BARS),
+    waveform: bucketBytes(audio.bytes, WAVE_BARS),
+    // ~32 kbps voice ≈ 4 KB/s; rough estimate keeps the offset readout sane.
     duration: audio.bytes.length / 4000,
+    pitch: syntheticPitch(fallbackSeed, { drift: 0.18, noise: 0.12 }),
+    decoded: null,
   };
 }
 
 // ─── scoring ────────────────────────────────────────────────────────────────
 
-function scoreMorae(morae: Mora[], audioEnergy: number[] | null, seed: number): MoraScore[] {
+function pitchAt(curve: PitchPoint[], x: number): number {
+  if (curve.length === 0) return 0.5;
+  if (x <= curve[0]!.x) return curve[0]!.y;
+  if (x >= curve[curve.length - 1]!.x) return curve[curve.length - 1]!.y;
+  for (let i = 1; i < curve.length; i++) {
+    const a = curve[i - 1]!, b = curve[i]!;
+    if (x <= b.x) {
+      const t = (x - a.x) / Math.max(1e-6, b.x - a.x);
+      return a.y + (b.y - a.y) * t;
+    }
+  }
+  return curve[curve.length - 1]!.y;
+}
+
+// Compare native vs user waveform + pitch per mora region. Each mora gets
+// a slice of the 56-bar waveform proportional to its position; the score
+// drops as the user's amplitude envelope and pitch diverge from native's.
+function scoreFromComparison(
+  morae: Mora[],
+  nativeWave: number[],
+  yourWave: number[],
+  nativePitch: PitchPoint[],
+  yourPitch: PitchPoint[],
+): MoraScore[] {
+  if (morae.length === 0) return [];
+  const perMora = WAVE_BARS / morae.length;
+  return morae.map((m, i) => {
+    const start = Math.floor(i * perMora);
+    const end = Math.max(start + 1, Math.floor((i + 1) * perMora));
+    let diff = 0;
+    let count = 0;
+    for (let b = start; b < end && b < WAVE_BARS; b++) {
+      diff += Math.abs((nativeWave[b] ?? 0) - (yourWave[b] ?? 0));
+      count++;
+    }
+    const ampDiff = count > 0 ? diff / count : 0;
+    const ampPenalty = Math.min(40, ampDiff * 80);
+
+    const xMid = (start + (end - start) / 2) / WAVE_BARS;
+    const pitchDiff = Math.abs(pitchAt(nativePitch, xMid) - pitchAt(yourPitch, xMid));
+    const pitchPenalty = Math.min(25, pitchDiff * 60);
+
+    const score = Math.max(40, Math.min(100, Math.round(100 - ampPenalty - pitchPenalty)));
+    return { kana: m.kana, phoneme: m.phoneme, score };
+  });
+}
+
+// Used when we have a native reference but the user hasn't recorded yet:
+// nudge scores based on how well the synthetic "your" waveform aligns with
+// the real native envelope so the per-mora bars aren't all identical.
+function scoreFromEnergy(morae: Mora[], envelope: number[], seed: number): MoraScore[] {
   const rnd = lcg(seed);
   return morae.map((m, i) => {
-    // Energy alignment if we have audio: morae landing on near-zero buckets
-    // get docked. With no audio, the score is just deterministic jitter.
-    const energy = audioEnergy
-      ? (audioEnergy[Math.min(audioEnergy.length - 1, Math.floor((i / morae.length) * audioEnergy.length))] ?? 0.5)
-      : 0.5;
+    const idx = Math.min(envelope.length - 1, Math.floor((i / Math.max(1, morae.length - 1)) * (envelope.length - 1)));
+    const energy = envelope[idx] ?? 0.5;
     const base = 86 + (rnd() - 0.5) * 18;
     const energyAdj = (energy - 0.3) * 12;
     const score = Math.max(45, Math.min(100, Math.round(base + energyAdj)));
@@ -309,26 +305,44 @@ export async function analyzePronunciation(
   const seed = hashSeed(sentence);
   const takeSeed = hashSeed(`${sentence}#${take}`);
 
-  // Native reference is stable per sentence; the user's take varies.
-  const nativeWaveform = bars(seed, WAVE_BARS, 1);
-  const nativePitch = pitchCurve(seed, { drift: 0, noise: 0.08 });
+  // 1. Native reference: real audio if we have it, otherwise synthetic.
+  const nativeDecoded = await loadNativeAudio(sentence, morphemes);
+  const nativeAudioAvailable = nativeDecoded !== null;
 
+  const nativeWaveform = nativeDecoded
+    ? bucketRms(nativeDecoded.samples, WAVE_BARS)
+    : syntheticBars(seed, WAVE_BARS, 1);
+  const nativePitch = nativeDecoded
+    ? pitchContour(nativeDecoded, PITCH_POINTS)
+    : syntheticPitch(seed, { drift: 0, noise: 0.08 });
+  const nativeDuration = nativeDecoded
+    ? Math.round((nativeDecoded.samples.length / nativeDecoded.sampleRate) * 10) / 10
+    : 4.0;
+
+  // 2. User take: real shape if audio submitted, otherwise synthetic.
   let yourWaveform: number[];
-  let nativeDuration: number;
+  let yourPitch: PitchPoint[];
+  let yourDuration: number;
   let offset: number;
   if (opts.audio && opts.audio.bytes.length > 0) {
-    const decoded = waveformFromAudio(opts.audio);
-    yourWaveform = decoded.bars;
-    nativeDuration = Math.max(2, Math.round(decoded.duration * 0.9 * 10) / 10);
-    offset = +(decoded.duration - nativeDuration).toFixed(2);
+    const take = shapeFromUserAudio(opts.audio, takeSeed);
+    yourWaveform = take.waveform;
+    yourPitch = take.pitch;
+    yourDuration = take.duration;
+    offset = +(yourDuration - nativeDuration).toFixed(2);
   } else {
-    yourWaveform = bars(takeSeed, WAVE_BARS, 0.85);
-    nativeDuration = 4.0;
-    offset = +(((takeSeed % 9) - 4) / 10).toFixed(2); // small deterministic jitter
+    yourWaveform = syntheticBars(takeSeed, WAVE_BARS, 0.85);
+    yourPitch = syntheticPitch(takeSeed, { drift: 0.18, noise: 0.12 });
+    yourDuration = nativeDuration;
+    offset = +(((takeSeed % 9) - 4) / 10).toFixed(2);
   }
 
-  const yourPitch = pitchCurve(takeSeed, { drift: 0.18, noise: 0.12 });
-  const phonemes = scoreMorae(morae, opts.audio ? yourWaveform : null, takeSeed);
+  // 3. Per-mora scoring. With user audio we compare against native; without
+  //    it we use the native energy envelope plus deterministic jitter so
+  //    the bars vary by mora.
+  const phonemes = opts.audio && opts.audio.bytes.length > 0
+    ? scoreFromComparison(morae, nativeWaveform, yourWaveform, nativePitch, yourPitch)
+    : scoreFromEnergy(morae, nativeWaveform, takeSeed);
 
   const overall = phonemes.length
     ? Math.round(phonemes.reduce((a, p) => a + p.score, 0) / phonemes.length)
@@ -345,8 +359,16 @@ export async function analyzePronunciation(
     yourWaveform,
     phonemes,
     overall,
+    nativeAudioAvailable,
+    nativeAudioUrl: nativeAudioAvailable
+      ? `/api/pronounce/native?q=${encodeURIComponent(sentence)}`
+      : undefined,
   };
 }
+
+// Re-exported so the route handler can hint at where the file should live
+// when one is missing.
+export { phraseAudioPath };
 
 if (import.meta.main) {
   const result = await analyzePronunciation("週末は友達と京都へ行きます。", { take: 3 });

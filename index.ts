@@ -17,6 +17,7 @@ import {
   type Rating,
 } from "./cards";
 import { analyzePronunciation } from "./pronunciation";
+import { loadNativeAudioBytes } from "./nativeAudio";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -220,6 +221,28 @@ const server = Bun.serve({
         const id = Number(req.params.id);
         if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
         return json(reviewHistory(id));
+      },
+    },
+    "/api/pronounce/native": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const sentence = new URL(req.url).searchParams.get("q");
+        if (!sentence) return json({ error: "missing ?q=" }, { status: 400 });
+        try {
+          const morphemes = await segment(sentence).catch(() => undefined);
+          const audio = await loadNativeAudioBytes(sentence, morphemes);
+          if (!audio) return json({ error: "no native recording" }, { status: 404 });
+          return new Response(audio.bytes, {
+            headers: {
+              "Content-Type": audio.contentType,
+              "Content-Length": String(audio.bytes.byteLength),
+              "Cache-Control": "public, max-age=31536000, immutable",
+              ...CORS_HEADERS,
+            },
+          });
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
       },
     },
     "/api/pronounce": {
