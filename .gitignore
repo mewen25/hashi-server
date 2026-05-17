@@ -50,3 +50,6 @@ cards.db
 cards.db-journal
 cards.db-wal
 cards.db-shm
+
+# native pronunciation audio library (audio/phrases/*.wav, audio/words/*.wav)
+audio
