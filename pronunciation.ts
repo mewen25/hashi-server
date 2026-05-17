@@ -19,6 +19,7 @@ import {
 import {
   bucketBytes,
   bucketRms,
+  decodeViaFfmpeg,
   decodeWav,
   isWav,
   pitchContour,
@@ -216,24 +217,29 @@ interface TakeShape {
   decoded: DecodedAudio | null;
 }
 
-function shapeFromUserAudio(audio: AnalyzeAudio, fallbackSeed: number): TakeShape {
+function shapeFromDecoded(decoded: DecodedAudio): TakeShape {
+  return {
+    waveform: bucketRms(decoded.samples, WAVE_BARS),
+    duration: decoded.samples.length / decoded.sampleRate,
+    pitch: pitchContour(decoded, PITCH_POINTS),
+    decoded,
+  };
+}
+
+async function shapeFromUserAudio(audio: AnalyzeAudio, fallbackSeed: number): Promise<TakeShape> {
   if (isWav(audio.bytes)) {
     const decoded = decodeWav(audio.bytes);
-    if (decoded) {
-      return {
-        waveform: bucketRms(decoded.samples, WAVE_BARS),
-        duration: decoded.samples.length / decoded.sampleRate,
-        pitch: pitchContour(decoded, PITCH_POINTS),
-        decoded,
-      };
-    }
+    if (decoded) return shapeFromDecoded(decoded);
   }
-  // Non-WAV compressed audio: we can't decode without a codec, so estimate
-  // a rough envelope from raw bytes and synthesise a plausible pitch curve
-  // so the drawer still gets something coherent.
+  // m4a / webm / ogg / mp3 from the browser/iOS MediaRecorder — decode via
+  // ffmpeg so duration and pitch contour reflect the real recording.
+  const transcoded = await decodeViaFfmpeg(audio.bytes);
+  if (transcoded) return shapeFromDecoded(transcoded);
+  // Last resort: rough envelope from raw bytes, synthetic pitch. The byte-
+  // length duration estimate is wildly inaccurate (varies with codec
+  // bitrate) and is the source of the "13.7s" reading when ffmpeg fails.
   return {
     waveform: bucketBytes(audio.bytes, WAVE_BARS),
-    // ~32 kbps voice ≈ 4 KB/s; rough estimate keeps the offset readout sane.
     duration: audio.bytes.length / 4000,
     pitch: syntheticPitch(fallbackSeed, { drift: 0.18, noise: 0.12 }),
     decoded: null,
@@ -346,7 +352,7 @@ export async function analyzePronunciation(
   let yourDuration: number;
   let offset: number;
   if (opts.audio && opts.audio.bytes.length > 0) {
-    const take = shapeFromUserAudio(opts.audio, takeSeed);
+    const take = await shapeFromUserAudio(opts.audio, takeSeed);
     yourWaveform = take.waveform;
     yourPitch = take.pitch;
     yourDuration = take.duration;
@@ -392,5 +398,5 @@ export async function analyzePronunciation(
 
 if (import.meta.main) {
   const result = await analyzePronunciation("週末は友達と京都へ行きます。", { take: 3 });
-  console.log(JSON.stringify(result, null, 2));
+  // console.log(JSON.stringify(result, null, 2));
 }

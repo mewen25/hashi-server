@@ -70,6 +70,32 @@ export function bucketRms(samples: Float32Array, buckets: number): number[] {
   return out.map(v => Math.max(0.08, v / peak));
 }
 
+// Pipe arbitrary compressed audio (m4a/webm/ogg/mp3/…) through ffmpeg to
+// raw mono Float32 PCM at 16 kHz. Used as the fallback when the browser
+// MediaRecorder gives us something other than WAV. We output raw f32le
+// rather than WAV because ffmpeg can't seek when writing to a pipe and
+// produces a WAV with a bogus data-chunk size that crashes decodeWav.
+// Returns null if ffmpeg isn't on PATH or the input is unrecognisable.
+const FFMPEG_SAMPLE_RATE = 16000;
+export async function decodeViaFfmpeg(bytes: Uint8Array): Promise<DecodedAudio | null> {
+  try {
+    const proc = Bun.spawn(
+      ["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-ac", "1", "-ar", String(FFMPEG_SAMPLE_RATE), "-f", "f32le", "pipe:1"],
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+    );
+    proc.stdin.write(bytes);
+    await proc.stdin.end();
+    const [ab, code] = await Promise.all([
+      new Response(proc.stdout).arrayBuffer(),
+      proc.exited,
+    ]);
+    if (code !== 0 || ab.byteLength < 4) return null;
+    return { samples: new Float32Array(ab), sampleRate: FFMPEG_SAMPLE_RATE };
+  } catch {
+    return null;
+  }
+}
+
 // For compressed/unknown bytes we can't decode without a codec — fall back to
 // a magnitude estimate from raw bytes so the drawer still gets a shape.
 export function bucketBytes(bytes: Uint8Array, buckets: number): number[] {

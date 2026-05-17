@@ -39,6 +39,8 @@ export interface NativeMorpheme {
   reading: string;
   surface: string;
   dictionary_form: string;
+  /** MeCab POS tag, e.g. "動詞", "名詞", "助詞", "助動詞". */
+  pos?: string;
 }
 
 function normaliseKey(s: string): string {
@@ -53,6 +55,7 @@ function findEntry(text: string): NativeEntry | null {
   if (!norm) return null;
   const hit = lookupOutputEntry(norm);
   if (!hit || !hit.sound) return null;
+  console.log(`findEntry: norm="${norm}" hit.id="${hit.id}" hit.sound="${hit.sound}"`)
   return {
     id: hit.id,
     reading: hit.p,
@@ -63,22 +66,40 @@ function findEntry(text: string): NativeEntry | null {
   };
 }
 
+// Particles (は, を, へ, の, …) and auxiliaries (ます, です, ぬ, た, …) carry
+// no lexical content — a recording of them in isolation doesn't help anyone
+// pronounce the surrounding phrase, and they're frequent enough that an
+// indiscriminate per-morpheme stitch will often surface them as "native
+// audio" for a sentence (e.g. わかりません → ぬ). Skip them, and require
+// every remaining content morpheme to have a recording before stitching:
+// a partial stitch (Kyoto + nothing for 行く) misleads worse than no audio.
+function isStitchableContent(pos?: string): boolean {
+  if (!pos) return true;
+  if (pos.startsWith("助詞")) return false;
+  if (pos.startsWith("助動詞")) return false;
+  if (pos.startsWith("記号")) return false;
+  if (pos.startsWith("フィラー")) return false;
+  return true;
+}
+
 function entriesForMorphemes(morphemes: NativeMorpheme[]): ResolvedNative[] {
+  const content = morphemes.filter(m => isStitchableContent(m.pos));
+  if (content.length === 0) return [];
   const out: ResolvedNative[] = [];
   const seenIds = new Set<string>();
-  for (const m of morphemes) {
+  for (const m of content) {
     const candidates = [m.dictionary_form, m.surface, m.reading].filter(
       (s): s is string => !!s && s.trim().length > 0,
     );
+    let matched: NativeEntry | null = null;
     for (const c of candidates) {
       const entry = findEntry(c);
-      if (entry && !seenIds.has(entry.id)) {
-        seenIds.add(entry.id);
-        out.push({ id: entry.id, entry });
-        break;
-      }
-      if (entry) break; // entry already seen — skip this morpheme entirely
+      if (entry) { matched = entry; break; }
     }
+    if (!matched) return []; // incomplete coverage — refuse the stitch
+    if (seenIds.has(matched.id)) continue;
+    seenIds.add(matched.id);
+    out.push({ id: matched.id, entry: matched });
   }
   return out;
 }

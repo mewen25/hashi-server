@@ -68,6 +68,17 @@ const entries: OutputEntry[] = [];
 const byAlt = new Map<string, OutputEntry>();
 const byReading = new Map<string, OutputEntry>();
 
+// Strip ASCII + JP punctuation and whitespace so phrases stored with a
+// trailing 。 (e.g. "わかりません。") still match a query of "わかりません".
+function normaliseKey(s: string): string {
+  return s.replace(/[\s　]+/g, "").replace(/[。、！？!?.,]+$/u, "").trim();
+}
+
+function indexUnder(map: Map<string, OutputEntry>, key: string, entry: OutputEntry) {
+  const existing = map.get(key);
+  if (!existing || (!existing.sound && entry.sound)) map.set(key, entry);
+}
+
 for (const [id, val] of Object.entries(raw)) {
   if (!val.p) continue;
   const alt = val.alt || val.p;
@@ -80,19 +91,23 @@ for (const [id, val] of Object.entries(raw)) {
     sound: val.sound || undefined,
   };
   entries.push(entry);
-  // For duplicate alt/reading, prefer the entry that has a sound file
-  const existingAlt = byAlt.get(alt);
-  if (!existingAlt || (!existingAlt.sound && entry.sound)) {
-    byAlt.set(alt, entry);
-  }
-  const existingReading = byReading.get(val.p);
-  if (!existingReading || (!existingReading.sound && entry.sound)) {
-    byReading.set(val.p, entry);
-  }
+  // Index under both raw and normalised forms so callers that didn't
+  // already strip punctuation still hit. The "prefer the one with a sound"
+  // tiebreak applies independently to each key.
+  indexUnder(byAlt, alt, entry);
+  indexUnder(byReading, val.p, entry);
+  const altNorm = normaliseKey(alt);
+  if (altNorm && altNorm !== alt) indexUnder(byAlt, altNorm, entry);
+  const readingNorm = normaliseKey(val.p);
+  if (readingNorm && readingNorm !== val.p) indexUnder(byReading, readingNorm, entry);
 }
 
 export function lookupOutputEntry(text: string): OutputEntry | null {
-  const norm = text.trim();
+  const raw = text.trim();
+  const hit = byAlt.get(raw) ?? byReading.get(raw);
+  if (hit) return hit;
+  const norm = normaliseKey(text);
+  if (!norm || norm === raw) return null;
   return byAlt.get(norm) ?? byReading.get(norm) ?? null;
 }
 

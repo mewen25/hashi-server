@@ -89,10 +89,17 @@ interface StreamEvent {
   is_error?: boolean;
 }
 
+const DEFAULT_MODEL = "haiku";
+
+function log(tag: string, t0: number, msg: string): void {
+  console.log(`[claude.ts +${(performance.now() - t0).toFixed(0)}ms] ${tag}: ${msg}`);
+}
+
 async function* streamClaude(
   systemPrompt: string,
   userPrompt: string,
-  model?: string,
+  model: string = DEFAULT_MODEL,
+  t0: number = performance.now(),
 ): AsyncGenerator<string, void, void> {
   const args = [
     "claude",
@@ -104,14 +111,19 @@ async function* streamClaude(
     "--include-partial-messages",
     "--verbose",
     "--no-session-persistence",
+    "--model", model,
   ];
-  if (model) args.push("--model", model);
 
+  log("spawn", t0, `claude -p (model=${model}, prompt=${userPrompt.length}B, system=${systemPrompt.length}B)`);
   const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
 
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDelta = false;
+  let firstByteAt = 0;
+  let firstDeltaAt = 0;
+  let deltaCount = 0;
+  let bytesYielded = 0;
   // With --json-schema, the CLI wraps structured output in a StructuredOutput
   // tool call (deltas of type input_json_delta → `partial_json`) AND then
   // echoes the same JSON back as plain text_delta on a follow-up turn. Lock
@@ -120,6 +132,10 @@ async function* streamClaude(
   let streamMode: "partial_json" | "text" | null = null;
 
   for await (const chunk of proc.stdout as unknown as AsyncIterable<Uint8Array>) {
+    if (firstByteAt === 0) {
+      firstByteAt = performance.now();
+      log("first-byte", t0, `first stdout chunk (${chunk.length}B)`);
+    }
     buffer += decoder.decode(chunk, { stream: true });
     let nl: number;
     while ((nl = buffer.indexOf("\n")) !== -1) {
@@ -134,27 +150,48 @@ async function* streamClaude(
         continue;
       }
 
-      if (event.type === "stream_event" && event.event?.type === "content_block_delta") {
+      if (event.type === "system" && event.subtype === "init") {
+        log("init", t0, "claude session initialized");
+      } else if (event.type === "stream_event" && event.event?.type === "content_block_delta") {
         const delta = event.event.delta;
         if (delta?.partial_json !== undefined) {
-          if (streamMode === null) streamMode = "partial_json";
+          if (streamMode === null) {
+            streamMode = "partial_json";
+            log("stream-mode", t0, "locked onto partial_json (tool-use schema)");
+          }
           if (streamMode === "partial_json") {
+            if (!sawDelta) { firstDeltaAt = performance.now(); log("first-token", t0, "first partial_json delta"); }
             sawDelta = true;
+            deltaCount++;
+            bytesYielded += delta.partial_json.length;
             yield delta.partial_json;
           }
         } else if (delta?.text !== undefined) {
-          if (streamMode === null) streamMode = "text";
+          if (streamMode === null) {
+            streamMode = "text";
+            log("stream-mode", t0, "locked onto text_delta");
+          }
           if (streamMode === "text") {
+            if (!sawDelta) { firstDeltaAt = performance.now(); log("first-token", t0, "first text delta"); }
             sawDelta = true;
+            deltaCount++;
+            bytesYielded += delta.text.length;
             yield delta.text;
           }
         }
       } else if (!sawDelta && event.type === "assistant" && event.message?.content) {
+        log("fallback", t0, "no deltas seen, falling back to full assistant message");
         for (const block of event.message.content) {
-          if (block.type === "text" && block.text) yield block.text;
+          if (block.type === "text" && block.text) {
+            bytesYielded += block.text.length;
+            yield block.text;
+          }
         }
-      } else if (event.type === "result" && event.is_error) {
-        throw new Error(`claude -p error: ${event.result ?? event.subtype ?? "unknown"}`);
+      } else if (event.type === "result") {
+        if (event.is_error) {
+          throw new Error(`claude -p error: ${event.result ?? event.subtype ?? "unknown"}`);
+        }
+        log("result", t0, `success (deltas=${deltaCount}, bytes=${bytesYielded})`);
       }
     }
   }
@@ -164,6 +201,8 @@ async function* streamClaude(
     const stderr = await new Response(proc.stderr).text();
     throw new Error(`claude -p exited with code ${proc.exitCode}: ${stderr.slice(0, 500)}`);
   }
+  const ttft = firstDeltaAt ? (firstDeltaAt - t0).toFixed(0) : "n/a";
+  log("exit", t0, `claude exited ok (ttft=${ttft}ms, deltas=${deltaCount}, bytes=${bytesYielded})`);
 }
 
 // Walks the streamed buffer and emits each completed segment object inside `"segments": [...]`.
@@ -218,14 +257,22 @@ export async function analyzeJapaneseSentence(
   sentence: string,
   opts: AnalyzeOptions = {},
 ): Promise<SentenceAnalysis> {
+  const t0 = performance.now();
+  log("start", t0, `sentence="${sentence}" intent=${opts.intent ? `"${opts.intent}"` : "none"}`);
+
+  const segStart = performance.now();
   const morphemes = await segment(sentence);
+  log("segment", t0, `got ${morphemes.length} morphemes in ${(performance.now() - segStart).toFixed(0)}ms`);
 
   const cacheKey = `${sentence} ${opts.intent ?? ""}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
+    log("cache-hit", t0, `replaying ${cached.segments.length} segments`);
     cached.segments.forEach((seg, i) => opts.onSegment?.(seg, i));
+    log("done", t0, `cache hit, total ${(performance.now() - t0).toFixed(0)}ms`);
     return cached;
   }
+  log("cache-miss", t0, `key="${cacheKey.slice(0, 60)}..."`);
 
   const breakdown = morphemes
     .map((m, i) => `${i}\t${m.surface}\t${m.dictionary_form}\t${m.reading}\t${m.pos}`)
@@ -242,16 +289,18 @@ export async function analyzeJapaneseSentence(
 
   let buffer = "";
   let emitted = 0;
-  for await (const delta of streamClaude(SYSTEM_PROMPT, userContent, opts.model)) {
+  for await (const delta of streamClaude(SYSTEM_PROMPT, userContent, opts.model, t0)) {
     buffer += delta;
     if (opts.onSegment) {
       const ready = extractCompletedSegments(buffer, emitted);
       for (const seg of ready) {
+        log("segment-ready", t0, `#${emitted} "${seg.surface}" confidence=${seg.confidence}`);
         opts.onSegment(seg, emitted);
         emitted++;
       }
     }
   }
+  log("stream-done", t0, `received ${buffer.length}B total, ${emitted} segments emitted`);
 
   let parsed: SentenceAnalysis;
   try {
@@ -259,8 +308,10 @@ export async function analyzeJapaneseSentence(
   } catch {
     throw new Error(`Failed to parse Claude response as JSON: ${buffer.slice(0, 200)}`);
   }
+  log("parsed", t0, `corrected="${parsed.corrected}" overall=${parsed.overallConfidence}`);
 
   if (!Array.isArray(parsed.segments) || parsed.segments.length !== morphemes.length) {
+    log("segment-fixup", t0, `model returned ${parsed.segments?.length ?? 0} segments, expected ${morphemes.length} — padding`);
     parsed.segments = morphemes.map((m, i) => ({
       surface: m.surface,
       confidence: parsed.segments?.[i]?.confidence ?? 0,
@@ -270,6 +321,7 @@ export async function analyzeJapaneseSentence(
   }
 
   cacheSet(cacheKey, parsed);
+  log("done", t0, `total ${(performance.now() - t0).toFixed(0)}ms`);
   return parsed;
 }
 
