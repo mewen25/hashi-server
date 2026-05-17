@@ -8,14 +8,13 @@
 // raw MP3 bytes — MPEG frames are self-delimiting so naive concatenation
 // works for files from the same encoder, which is the common case here.
 //
-// PCM decoding is not available (no MP3 codec in this environment), so
-// loadNativeAudio always returns null and the analyser uses synthetic
-// shapes for nativeWaveform/nativePitch. nativeAudioAvailable on the
-// response means "a playable recording exists at nativeAudioUrl", which
-// is what the drawer actually cares about.
+// For PCM analysis (pitch contour, RMS bucketing) we read sidecar WAVs
+// pre-converted from the MP3s into ./audio/ by convert_jp_sounds.ts. If a
+// sidecar is missing, loadNativeAudio falls back to null for that part and
+// the analyser uses synthetic shapes.
 
 import { lookupOutputEntry } from "./dict";
-import type { DecodedAudio } from "./audioDecode";
+import { decodeWav, type DecodedAudio } from "./audioDecode";
 
 export interface NativeEntry {
   id: string;
@@ -117,14 +116,56 @@ export async function hasNativeFiles(resolved: ResolvedNative[]): Promise<boolea
   return true;
 }
 
-// No MP3 decoder available in this environment — return null so the
-// analyser falls back to synthetic waveform/pitch. The audio is still
-// served raw for playback via loadNativeAudioBytes.
+// "jp_sounds/jp_1_male.mp3" → "audio/jp_1_male.wav"
+function wavPathFor(soundPath: string): string {
+  return soundPath.replace(/^jp_sounds\//, "audio/").replace(/\.mp3$/i, ".wav");
+}
+
+const decodedCache = new Map<string, DecodedAudio | null>();
+async function loadDecodedWav(path: string): Promise<DecodedAudio | null> {
+  const hit = decodedCache.get(path);
+  if (hit !== undefined) return hit;
+  const file = Bun.file(path);
+  if (!(await file.exists())) { decodedCache.set(path, null); return null; }
+  const decoded = decodeWav(new Uint8Array(await file.arrayBuffer()));
+  decodedCache.set(path, decoded);
+  return decoded;
+}
+
+// Stitch per-entry clips with a short silence so per-mora scoring still
+// sees clear boundaries. Mismatched sample rates would need resampling
+// (out of scope); in that case fall back to the first clip.
+function concatenate(parts: DecodedAudio[], gapMs = 60): DecodedAudio | null {
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return parts[0]!;
+  const sampleRate = parts[0]!.sampleRate;
+  if (!parts.every(p => p.sampleRate === sampleRate)) return parts[0]!;
+  const gap = Math.floor((gapMs / 1000) * sampleRate);
+  const total = parts.reduce((acc, p) => acc + p.samples.length, 0) + gap * (parts.length - 1);
+  const out = new Float32Array(total);
+  let off = 0;
+  for (let i = 0; i < parts.length; i++) {
+    out.set(parts[i]!.samples, off);
+    off += parts[i]!.samples.length;
+    if (i < parts.length - 1) off += gap;
+  }
+  return { samples: out, sampleRate };
+}
+
+// Decode the WAV sidecars for the resolved entries and concatenate. Skips
+// any entry whose sidecar is missing; returns null if none decode.
 export async function loadNativeAudio(
-  _sentence: string,
-  _morphemes?: NativeMorpheme[],
+  sentence: string,
+  morphemes?: NativeMorpheme[],
 ): Promise<DecodedAudio | null> {
-  return null;
+  const resolved = await resolveNative(sentence, morphemes);
+  if (!resolved) return null;
+  const parts: DecodedAudio[] = [];
+  for (const r of resolved) {
+    const decoded = await loadDecodedWav(wavPathFor(r.entry.sound));
+    if (decoded) parts.push(decoded);
+  }
+  return concatenate(parts);
 }
 
 // MP3 bytes for /api/pronounce/native. A single phrase streams the file
