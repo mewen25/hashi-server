@@ -55,11 +55,12 @@ export interface PronunciationAnalysis {
   phonemes: MoraScore[];
   /** 0–100 overall score; the drawer can choose to surface it. */
   overall: number;
-  /** True when a playable native recording exists at nativeAudioUrl. The
-   *  analyser's waveform/pitch shapes may still be synthetic (we don't
-   *  decode MP3 server-side); this flag just tells the client to surface
-   *  the play button. */
+  /** True when a playable native MP3 exists at nativeAudioUrl. */
   nativeAudioAvailable: boolean;
+  /** True when nativeWaveform/nativePitch/nativeDuration were derived
+   *  from a real recording (WAV sidecar decoded). False means they're
+   *  deterministic stand-ins — the drawer may want to label them. */
+  nativeAnalysisFromAudio: boolean;
   /** URL the client can hit to play the native reference, if available. */
   nativeAudioUrl?: string;
   /** output.json IDs the native reference was assembled from (one for a
@@ -318,14 +319,15 @@ export async function analyzePronunciation(
   const seed = hashSeed(sentence);
   const takeSeed = hashSeed(`${sentence}#${take}`);
 
-  // 1. Native reference: look up the manifest entry/entries first so we
-  //    can surface IDs + meaning on the response. nativeAudioAvailable
-  //    reflects whether the actual MP3(s) exist on disk so the client
-  //    knows to offer playback. nativeDecoded stays null while we have
-  //    no MP3 codec; the synthetic fallback below renders the waveform.
+  // 1. Native reference: resolve the dictionary entry/entries so we can
+  //    surface IDs + meaning regardless. nativeAudioAvailable means a
+  //    playable MP3 exists; nativeAnalysisFromAudio means we also have
+  //    the WAV sidecar (from convert_jp_sounds.ts) and the analyser's
+  //    waveform/pitch/duration were derived from it rather than synthesised.
   const resolved = await resolveNative(sentence, morphemes);
   const nativeAudioAvailable = resolved !== null && (await hasNativeFiles(resolved));
   const nativeDecoded = resolved ? await loadNativeAudio(sentence, morphemes) : null;
+  const nativeAnalysisFromAudio = nativeDecoded !== null;
   const describe = resolved ? describeResolved(resolved) : null;
 
   const nativeWaveform = nativeDecoded
@@ -379,6 +381,7 @@ export async function analyzePronunciation(
     phonemes,
     overall,
     nativeAudioAvailable,
+    nativeAnalysisFromAudio,
     nativeAudioUrl: nativeAudioAvailable
       ? `/api/pronounce/native?q=${encodeURIComponent(sentence)}`
       : undefined,
