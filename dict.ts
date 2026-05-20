@@ -170,6 +170,41 @@ export async function suggestEn(q: string): Promise<EnSuggestion[]> {
   return combined.slice(0, 10);
 }
 
+export interface VocabEntry {
+  id: string;
+  kanji: string;
+  reading: string;
+  romaji: string;
+  en: string;
+  sound?: string;
+}
+
+function toVocabEntry(id: string, e: RawEntry): VocabEntry | null {
+  if (!e.p) return null;
+  return {
+    id,
+    kanji: e.alt || e.p,
+    reading: e.p,
+    romaji: e.ro || "",
+    en: e.en || "",
+    sound: e.sound || undefined,
+  };
+}
+
+const vocabList: VocabEntry[] = Object.entries(raw)
+  .map(([id, v]) => toVocabEntry(id, v))
+  .filter((v): v is VocabEntry => v !== null)
+  .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+
+export function getVocabulary(id: string): VocabEntry | null {
+  const e = raw[id];
+  return e ? toVocabEntry(id, e) : null;
+}
+
+export function listVocabulary(): VocabEntry[] {
+  return vocabList;
+}
+
 export async function getWord(word: string): Promise<WordEntry | null> {
   const entry = lookupOutputEntry(word);
   if (entry) {
