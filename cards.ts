@@ -196,6 +196,9 @@ const insertCardStmt = db.prepare<
 `);
 
 const getCardStmt = db.query<Card, [number]>(`SELECT * FROM cards WHERE id = ?`);
+const findBySourceStmt = db.query<Card, [string]>(
+  `SELECT * FROM cards WHERE source = ? LIMIT 1`,
+);
 const listCardsStmt = db.query<Card, []>(`SELECT * FROM cards ORDER BY created_at DESC`);
 const listDueStmt = db.query<Card, [number, number]>(`
   SELECT * FROM cards
@@ -260,6 +263,10 @@ export function createCard(input: NewCardInput, now: number = Date.now()): Card 
 
 export function getCard(id: number): Card | null {
   return getCardStmt.get(id) ?? null;
+}
+
+export function findCardBySource(source: string): Card | null {
+  return findBySourceStmt.get(source) ?? null;
 }
 
 export function listCards(): Card[] {

@@ -1,12 +1,20 @@
 import { convert } from "./ime";
 import { logRequest } from "./requests";
-import { suggestEn, getWord, lookupOutputEntry } from "./dict";
+import {
+  suggestEn,
+  getWord,
+  lookupOutputEntry,
+  listVocabulary,
+  getVocabulary,
+  type VocabEntry,
+} from "./dict";
 import { segment } from "./segmenter";
 import { translate } from "./translate";
 import { analyzeJapaneseSentence } from "./claude";
 import {
   createCard,
   deleteCard,
+  findCardBySource,
   getCard,
   getStats,
   listCards,
@@ -14,6 +22,7 @@ import {
   reviewCard,
   reviewHistory,
   updateCard,
+  type Card,
   type Rating,
 } from "./cards";
 // import { analyzePronunciation, type PronunciationAnalysis } from "./pronunciation2";
@@ -51,9 +60,128 @@ function json(data: unknown, init: ResponseInit = {}) {
   });
 }
 
+type StudyItem =
+  | { kind: "card"; card: Card; vocab?: VocabEntry }
+  | { kind: "new"; vocab: VocabEntry }
+  | null;
+
+function vocabIdFromSource(source: string): string | null {
+  return source.startsWith("vocab:") ? source.slice("vocab:".length) : null;
+}
+
+function attachVocab(card: Card): { card: Card; vocab?: VocabEntry } {
+  const vid = vocabIdFromSource(card.source);
+  const vocab = vid ? getVocabulary(vid) ?? undefined : undefined;
+  return { card, vocab };
+}
+
+function nextStudyItem(): { item: StudyItem; queue: ReturnType<typeof studyQueue> } {
+  const queue = studyQueue();
+  const due = listDue(1);
+  if (due.length) {
+    const { card, vocab } = attachVocab(due[0]!);
+    return { item: { kind: "card", card, vocab }, queue };
+  }
+  for (const v of listVocabulary()) {
+    if (!findCardBySource(`vocab:${v.id}`)) {
+      return { item: { kind: "new", vocab: v }, queue };
+    }
+  }
+  return { item: null, queue };
+}
+
+function studyQueue() {
+  const stats = getStats();
+  const vocab = listVocabulary();
+  let added = 0;
+  for (const v of vocab) if (findCardBySource(`vocab:${v.id}`)) added += 1;
+  return {
+    due: stats.due_now,
+    learning: stats.learning,
+    review: stats.review,
+    new_in_db: stats.new,
+    reviewed_today: stats.reviewed_today,
+    vocab_total: vocab.length,
+    vocab_added: added,
+    vocab_remaining: vocab.length - added,
+  };
+}
+
 const server = Bun.serve({
   port: Number(Bun.env.PORT ?? 3000),
   routes: {
+    "/api/vocabulary": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: (req) => {
+        const url = new URL(req.url);
+        const limit = Math.max(1, Math.min(1000, Number(url.searchParams.get("limit") ?? "100")));
+        const offset = Math.max(0, Number(url.searchParams.get("offset") ?? "0"));
+        const filter = url.searchParams.get("filter"); // "added" | "remaining" | null
+        const items = listVocabulary().map((v) => {
+          const card = findCardBySource(`vocab:${v.id}`);
+          return { ...v, card_id: card?.id ?? null, state: card?.state ?? null };
+        });
+        const filtered =
+          filter === "added"
+            ? items.filter((v) => v.card_id !== null)
+            : filter === "remaining"
+              ? items.filter((v) => v.card_id === null)
+              : items;
+        return json({
+          total: filtered.length,
+          items: filtered.slice(offset, offset + limit),
+        });
+      },
+    },
+    "/api/vocabulary/:id": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: (req) => {
+        const v = getVocabulary(req.params.id);
+        if (!v) return json({ error: "not found" }, { status: 404 });
+        const card = findCardBySource(`vocab:${v.id}`);
+        return json({ ...v, card_id: card?.id ?? null, state: card?.state ?? null });
+      },
+    },
+    "/api/study/next": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: () => json(nextStudyItem()),
+    },
+    "/api/study/review": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      POST: async (req) => {
+        const body = (await req.json()) as {
+          card_id?: number;
+          vocab_id?: string;
+          rating?: string;
+        };
+        const rating = body.rating as Rating | undefined;
+        if (!rating) return json({ error: "missing rating" }, { status: 400 });
+        try {
+          let cardId = body.card_id ?? null;
+          if (!cardId && body.vocab_id) {
+            const v = getVocabulary(body.vocab_id);
+            if (!v) return json({ error: "unknown vocab_id" }, { status: 404 });
+            const existing = findCardBySource(`vocab:${v.id}`);
+            cardId = existing
+              ? existing.id
+              : createCard({
+                  kanji: v.kanji,
+                  reading: v.reading,
+                  gloss: v.en,
+                  pos: "",
+                  notes: v.romaji ? `romaji: ${v.romaji}` : "",
+                  source: `vocab:${v.id}`,
+                }).id;
+          }
+          if (!cardId) return json({ error: "missing card_id or vocab_id" }, { status: 400 });
+          const reviewed = reviewCard(cardId, rating);
+          if (!reviewed) return json({ error: "card not found" }, { status: 404 });
+          return json({ reviewed: attachVocab(reviewed), ...nextStudyItem() });
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 400 });
+        }
+      },
+    },
     "/api/convert": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
       GET: async (req) => {
