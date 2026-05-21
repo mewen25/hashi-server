@@ -13,6 +13,7 @@ import {
 import { segment } from "./segmenter";
 import { translate } from "./translate";
 import { analyzeJapaneseSentence } from "./claude";
+import { conjugate } from "./conjugate";
 import {
   createCard,
   deleteCard,
@@ -288,15 +289,30 @@ const server = Bun.serve({
     "/api/analyse": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
       POST: async (req) => {
-        const { sentence, intent } = (await req.json()) as {
+        const { sentence, intent, mode } = (await req.json()) as {
           sentence?: string;
           intent?: string;
+          mode?: "general" | "register";
         };
         if (!sentence) return json({ error: "missing sentence in body" }, { status: 400 });
         try {
-          return json(await analyzeJapaneseSentence(sentence, { intent }));
+          return json(await analyzeJapaneseSentence(sentence, { intent, mode }));
         } catch (err) {
           return json({ error: (err as Error).message }, { status: 500 });
+        }
+      },
+    },
+    "/api/conjugate": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: (req) => {
+        const url = new URL(req.url);
+        const q = url.searchParams.get("q")?.trim();
+        const reading = url.searchParams.get("r")?.trim() || undefined;
+        if (!q) return json({ error: "missing q" }, { status: 400 });
+        try {
+          return json(conjugate(q, reading));
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 400 });
         }
       },
     },
