@@ -6,7 +6,9 @@ import {
   lookupOutputEntry,
   listVocabulary,
   getVocabulary,
+  searchVocabulary,
   type VocabEntry,
+  type VocabSearchField,
 } from "./dict";
 import { segment } from "./segmenter";
 import { translate } from "./translate";
@@ -116,8 +118,18 @@ const server = Bun.serve({
         const url = new URL(req.url);
         const limit = Math.max(1, Math.min(1000, Number(url.searchParams.get("limit") ?? "100")));
         const offset = Math.max(0, Number(url.searchParams.get("offset") ?? "0"));
+        const cursorParam = url.searchParams.get("cursor");
         const filter = url.searchParams.get("filter"); // "added" | "remaining" | null
-        const items = listVocabulary().map((v) => {
+        const q = url.searchParams.get("q")?.trim() ?? "";
+        const fieldParam = url.searchParams.get("field") ?? "any";
+        const allowedFields = ["kana", "romaji", "en", "kanji", "any"] as const;
+        const field = (allowedFields as readonly string[]).includes(fieldParam)
+          ? (fieldParam as VocabSearchField)
+          : "any";
+        const fuzzy = url.searchParams.get("fuzzy") === "1" || url.searchParams.get("fuzzy") === "true";
+
+        const base = q ? searchVocabulary({ q, field, fuzzy }).entries : listVocabulary();
+        const items = base.map((v) => {
           const card = findCardBySource(`vocab:${v.id}`);
           return { ...v, card_id: card?.id ?? null, state: card?.state ?? null };
         });
@@ -127,9 +139,29 @@ const server = Bun.serve({
             : filter === "remaining"
               ? items.filter((v) => v.card_id === null)
               : items;
+
+        let start = offset;
+        if (cursorParam) {
+          try {
+            const decoded = Number(Buffer.from(cursorParam, "base64").toString("utf8"));
+            if (Number.isFinite(decoded) && decoded >= 0) start = decoded;
+          } catch {
+            return json({ error: "invalid cursor" }, { status: 400 });
+          }
+        }
+        const page = filtered.slice(start, start + limit);
+        const nextIndex = start + page.length;
+        const next_cursor =
+          nextIndex < filtered.length
+            ? Buffer.from(String(nextIndex)).toString("base64")
+            : null;
+
         return json({
           total: filtered.length,
-          items: filtered.slice(offset, offset + limit),
+          limit,
+          offset: start,
+          next_cursor,
+          items: page,
         });
       },
     },

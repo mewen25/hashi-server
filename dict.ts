@@ -220,6 +220,84 @@ export function listVocabulary(): VocabEntry[] {
   return vocabList;
 }
 
+export type VocabSearchField = "kana" | "romaji" | "en" | "kanji" | "any";
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = new Array<number>(b.length + 1).fill(0);
+  let curr = new Array<number>(b.length + 1).fill(0);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    const ai = a.charCodeAt(i - 1);
+    for (let j = 1; j <= b.length; j++) {
+      const cost = ai === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length]!;
+}
+
+// Sliding-window distance so a short query (e.g. "konichi") can match a
+// longer target ("konnichiwa") without being penalised for the extra chars.
+function fuzzyScore(query: string, target: string): number {
+  if (!query || !target) return Infinity;
+  if (target === query) return 0;
+  if (target.includes(query)) return 0;
+  if (target.length <= query.length + 2) return levenshtein(query, target);
+  const win = query.length + 1;
+  let best = levenshtein(query, target.slice(0, win));
+  for (let i = 1; i + win <= target.length; i++) {
+    const d = levenshtein(query, target.slice(i, i + win));
+    if (d < best) best = d;
+    if (best === 0) return 0;
+  }
+  return best;
+}
+
+function fieldsOf(v: VocabEntry, field: VocabSearchField): string[] {
+  switch (field) {
+    case "kana": return [v.reading];
+    case "romaji": return [v.romaji];
+    case "en": return [v.en];
+    case "kanji": return [v.kanji];
+    default: return [v.reading, v.romaji, v.en, v.kanji];
+  }
+}
+
+export function searchVocabulary(opts: {
+  q: string;
+  field?: VocabSearchField;
+  fuzzy?: boolean;
+}): { entries: VocabEntry[]; scores?: number[] } {
+  const q = opts.q.trim().toLowerCase();
+  const field = opts.field ?? "any";
+  if (!q) return { entries: vocabList };
+  if (!opts.fuzzy) {
+    const entries = vocabList.filter((v) =>
+      fieldsOf(v, field).some((s) => s.toLowerCase().includes(q)),
+    );
+    return { entries };
+  }
+  const threshold = Math.max(2, Math.floor(q.length / 2));
+  const scored: { v: VocabEntry; score: number }[] = [];
+  for (const v of vocabList) {
+    let best = Infinity;
+    for (const f of fieldsOf(v, field)) {
+      if (!f) continue;
+      const d = fuzzyScore(q, f.toLowerCase());
+      if (d < best) best = d;
+      if (best === 0) break;
+    }
+    if (best <= threshold) scored.push({ v, score: best });
+  }
+  scored.sort((a, b) => a.score - b.score || (Number(a.v.id) || 0) - (Number(b.v.id) || 0));
+  return { entries: scored.map((s) => s.v), scores: scored.map((s) => s.score) };
+}
+
 export async function getWord(word: string): Promise<WordEntry | null> {
   const entry = lookupOutputEntry(word);
   if (entry) {
