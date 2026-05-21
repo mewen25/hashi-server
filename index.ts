@@ -15,6 +15,18 @@ import { translate } from "./translate";
 import { analyzeJapaneseSentence } from "./claude";
 import { conjugate } from "./conjugate";
 import {
+  listChapters as svListChapters,
+  createChapter as svCreateChapter,
+  patchChapter as svPatchChapter,
+  deleteChapter as svDeleteChapter,
+  listVocabulary as svListVocab,
+  bulkAddVocabulary as svBulkAdd,
+  patchVocabulary as svPatchVocab,
+  deleteVocabulary as svDeleteVocab,
+  getStudyToday as svStudyToday,
+  postStudyAnswer as svStudyAnswer,
+} from "./studyVocab";
+import {
   createCard,
   deleteCard,
   findCardBySource,
@@ -215,6 +227,96 @@ const server = Bun.serve({
         }
       },
     },
+    // ── Chapters ───────────────────────────────────────────────────────
+    "/api/chapters": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: () => json(svListChapters()),
+      POST: async (req) => {
+        const { title, subtitle } = (await req.json()) as { title?: string; subtitle?: string };
+        if (!title?.trim()) return json({ error: "missing title" }, { status: 400 });
+        return json(svCreateChapter({ title, subtitle }), { status: 201 });
+      },
+    },
+    "/api/chapters/:id": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      PATCH: async (req) => {
+        const c = svPatchChapter(req.params.id, await req.json() as { title?: string; subtitle?: string });
+        if (!c) return json({ error: "not found" }, { status: 404 });
+        return json(c);
+      },
+      DELETE: (req) => {
+        const ok = svDeleteChapter(req.params.id);
+        if (!ok) return json({ error: "not found" }, { status: 404 });
+        return json({ ok: true });
+      },
+    },
+
+    // ── Study vocab (new route to avoid clash with existing /api/vocabulary) ──
+    "/api/study/vocab": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: (req) => {
+        const u = new URL(req.url);
+        return json(svListVocab({
+          chapter: u.searchParams.get("chapter") ?? undefined,
+          state: (u.searchParams.get("state") ?? undefined) as Parameters<typeof svListVocab>[0]["state"],
+          q: u.searchParams.get("q") ?? undefined,
+          limit: u.searchParams.has("limit") ? Number(u.searchParams.get("limit")) : undefined,
+        }));
+      },
+    },
+    "/api/study/vocab/bulk": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      POST: async (req) => {
+        const body = (await req.json()) as { chapter_id?: string; words?: { kanji: string; reading?: string; gloss?: string }[] };
+        if (!body.chapter_id) return json({ error: "missing chapter_id" }, { status: 400 });
+        if (!Array.isArray(body.words) || body.words.length === 0) return json({ error: "missing words" }, { status: 400 });
+        try {
+          return json(svBulkAdd({ chapter_id: body.chapter_id, words: body.words }), { status: 201 });
+        } catch (err) {
+          return json({ error: (err as Error).message }, { status: 400 });
+        }
+      },
+    },
+    "/api/study/vocab/:id": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      PATCH: async (req) => {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
+        const v = svPatchVocab(id, await req.json() as Parameters<typeof svPatchVocab>[1]);
+        if (!v) return json({ error: "not found" }, { status: 404 });
+        return json(v);
+      },
+      DELETE: (req) => {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
+        const ok = svDeleteVocab(id);
+        if (!ok) return json({ error: "not found" }, { status: 404 });
+        return json({ ok: true });
+      },
+    },
+
+    // ── Study session ──────────────────────────────────────────────────
+    "/api/study/today": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: (req) => {
+        const u = new URL(req.url);
+        return json(svStudyToday({
+          chapter: u.searchParams.get("chapter") ?? undefined,
+          limit: u.searchParams.has("limit") ? Number(u.searchParams.get("limit")) : undefined,
+        }));
+      },
+    },
+    "/api/study/answer": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      POST: async (req) => {
+        const body = (await req.json()) as Parameters<typeof svStudyAnswer>[0];
+        if (!body.vocab_id || !body.kind) return json({ error: "missing vocab_id or kind" }, { status: 400 });
+        const v = svStudyAnswer(body);
+        if (!v) return json({ error: "not found" }, { status: 404 });
+        return json(v);
+      },
+    },
+
     "/api/convert": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
       GET: async (req) => {
