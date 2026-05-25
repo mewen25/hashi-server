@@ -67,6 +67,9 @@ export interface SvVocab {
   learning_streak: number;
   due_at?: number;
   sound?: string;
+  // Relative path to the illustration SVG, e.g. "svg/<hash>.svg".
+  // Clients prefix with the server base URL to fetch it.
+  image?: string;
 }
 
 type DbVocab = {
@@ -136,6 +139,7 @@ function toSvVocab(row: DbVocab): SvVocab {
     learning_streak: row.learning_streak,
     due_at: row.due_at ?? undefined,
     sound: entry?.sound,
+    image: entry?.image,
   };
 }
 

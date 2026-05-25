@@ -684,7 +684,23 @@ const server = Bun.serve({
       },
     },
   },
-  fetch: () => new Response("Not Found", { status: 404, headers: CORS_HEADERS }),
+  fetch: async (req) => {
+    // Serve illustration SVGs: GET /svg/<hash>.svg
+    const { pathname } = new URL(req.url);
+    if (pathname.startsWith("/svg/")) {
+      const filename = pathname.slice(5); // strip leading "svg/"
+      // Reject path traversal
+      if (filename.includes("/") || filename.includes("..")) {
+        return new Response("Forbidden", { status: 403, headers: CORS_HEADERS });
+      }
+      const file = Bun.file(`svg/${filename}`);
+      if (!(await file.exists())) return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
+      return new Response(file, {
+        headers: { "Content-Type": "image/svg+xml", ...CORS_HEADERS },
+      });
+    }
+    return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
+  },
   development: { hmr: true, console: true },
 });
 

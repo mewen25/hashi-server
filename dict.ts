@@ -6,6 +6,7 @@ interface RawEntry {
   alt?: string;
   en?: string;
   sound?: string | null;
+  image?: string | null;
 }
 
 interface OutputEntry {
@@ -15,6 +16,7 @@ interface OutputEntry {
   alt: string;
   en: string;
   sound?: string;
+  image?: string;
 }
 
 const jmdict = new Database("jmdict.db", { readonly: true });
@@ -89,6 +91,7 @@ for (const [id, val] of Object.entries(raw)) {
     alt,
     en: val.en || "",
     sound: val.sound || undefined,
+    image: val.image || undefined,
   };
   entries.push(entry);
   // Index under both raw and normalised forms so callers that didn't

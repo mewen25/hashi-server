@@ -54,3 +54,4 @@ cards.db-shm
 
 # native pronunciation audio library (audio/phrases/*.wav, audio/words/*.wav)
 audio
+svg
