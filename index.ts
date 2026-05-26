@@ -12,7 +12,7 @@ import {
 } from "./dict";
 import { segment } from "./segmenter";
 import { translate } from "./translate";
-import { analyzeJapaneseSentence } from "./claude";
+import { analyzeJapaneseSentence } from "./deepseek";
 import { conjugate } from "./conjugate";
 import {
   listChapters as svListChapters,
@@ -666,6 +666,21 @@ const server = Bun.serve({
       },
     },
     "/health": () => json({ ok: true }),
+    // Serve illustration SVGs: GET /svg/<hash>.svg
+    "/svg/:filename": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: async (req) => {
+        const filename = req.params.filename;
+        if (!filename || filename.includes("/") || filename.includes("..")) {
+          return new Response("Forbidden", { status: 403, headers: CORS_HEADERS });
+        }
+        const file = Bun.file(`${import.meta.dir}/svg/${filename}`);
+        if (!(await file.exists())) return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
+        return new Response(file, {
+          headers: { "Content-Type": "image/svg+xml", ...CORS_HEADERS },
+        });
+      },
+    },
     "/api/translate": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
       GET: async (req) => {
@@ -684,23 +699,7 @@ const server = Bun.serve({
       },
     },
   },
-  fetch: async (req) => {
-    // Serve illustration SVGs: GET /svg/<hash>.svg
-    const { pathname } = new URL(req.url);
-    if (pathname.startsWith("/svg/")) {
-      const filename = pathname.slice(5); // strip leading "svg/"
-      // Reject path traversal
-      if (filename.includes("/") || filename.includes("..")) {
-        return new Response("Forbidden", { status: 403, headers: CORS_HEADERS });
-      }
-      const file = Bun.file(`svg/${filename}`);
-      if (!(await file.exists())) return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
-      return new Response(file, {
-        headers: { "Content-Type": "image/svg+xml", ...CORS_HEADERS },
-      });
-    }
-    return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
-  },
+  fetch: () => new Response("Not Found", { status: 404, headers: CORS_HEADERS }),
   development: { hmr: true, console: true },
 });
 
