@@ -18,6 +18,14 @@ dict_fts.db
 requests.db-wal
 requests.db-shm
 
+# served from R2 — not needed in the container
+audio
+svg
+jp_sounds
+
+# no build script; served from R2 or not needed at runtime
+mozc_dict.db
+
 Dockerfile
 .dockerignore
 README.md

@@ -15,6 +15,7 @@
 
 import { lookupOutputEntry } from "./dict";
 import { decodeWav, type DecodedAudio } from "./audioDecode";
+import { assetExists, readAsset } from "./assets";
 
 export interface NativeEntry {
   id: string;
@@ -132,7 +133,7 @@ export function describeResolved(resolved: ResolvedNative[]): { ids: string[]; m
 // Used by the analyser to decide whether to advertise nativeAudioUrl.
 export async function hasNativeFiles(resolved: ResolvedNative[]): Promise<boolean> {
   for (const r of resolved) {
-    if (!(await Bun.file(r.entry.sound).exists())) return false;
+    if (!(await assetExists(r.entry.sound))) return false;
   }
   return true;
 }
@@ -146,9 +147,9 @@ const decodedCache = new Map<string, DecodedAudio | null>();
 async function loadDecodedWav(path: string): Promise<DecodedAudio | null> {
   const hit = decodedCache.get(path);
   if (hit !== undefined) return hit;
-  const file = Bun.file(path);
-  if (!(await file.exists())) { decodedCache.set(path, null); return null; }
-  const decoded = decodeWav(new Uint8Array(await file.arrayBuffer()));
+  const bytes = await readAsset(path);
+  if (!bytes) { decodedCache.set(path, null); return null; }
+  const decoded = decodeWav(bytes);
   decodedCache.set(path, decoded);
   return decoded;
 }
@@ -202,9 +203,9 @@ export async function loadNativeAudioBytes(
 
   const chunks: Uint8Array[] = [];
   for (const r of resolved) {
-    const file = Bun.file(r.entry.sound);
-    if (!(await file.exists())) continue;
-    chunks.push(new Uint8Array(await file.arrayBuffer()));
+    const bytes = await readAsset(r.entry.sound);
+    if (!bytes) continue;
+    chunks.push(bytes);
   }
   if (chunks.length === 0) return null;
   if (chunks.length === 1) {

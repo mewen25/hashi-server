@@ -38,9 +38,11 @@ RUN bun install --frozen-lockfile --production
 COPY . .
 
 # Overwrite any stray local copies with the freshly regenerated dbs.
-# mozc_dict.db has no build script in this repo and must be present in the
-# build context (kept out of .dockerignore for that reason).
 COPY --from=dict-builder /build/jmdict.db /build/dict_fts.db ./
+
+# Audio, SVG, and jp_sounds assets are served from R2.
+# Set this to your R2 public bucket URL (e.g. https://pub-<hash>.r2.dev).
+ENV ASSETS_BASE_URL=""
 
 EXPOSE 3000
 CMD ["sh", "-c", "python segmenter_server.py & exec bun run index.ts"]

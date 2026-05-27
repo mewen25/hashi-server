@@ -49,6 +49,7 @@ import {
   deletePassage,
 } from "./passages";
 import { ingestUrl, IngestError } from "./ingest";
+import { assetUrl } from "./assets";
 
 const PRONUNCIATION_LOG_PATH = Bun.env.PRONUNCIATION_LOG ?? "pronunciation.log.jsonl";
 const pronunciationLog = Bun.file(PRONUNCIATION_LOG_PATH).writer();
@@ -611,32 +612,17 @@ const server = Bun.serve({
         if (!q) return json({ error: "missing ?q=" }, { status: 400 });
         const entry = lookupOutputEntry(q);
         if (!entry?.sound) return json({ error: "not found" }, { status: 404 });
-        try {
-          const file = Bun.file(entry.sound);
-          const exists = await file.exists();
-          if (!exists) return json({ error: "file not found" }, { status: 404 });
-          return new Response(null, {
-            headers: { "Content-Type": "audio/mpeg", ...CORS_HEADERS },
-          });
-        } catch {
-          return json({ error: "failed to read file" }, { status: 500 });
-        }
+        return new Response(null, {
+          headers: { "Content-Type": "audio/mpeg", ...CORS_HEADERS },
+        });
       },
       GET: async (req) => {
         const q = new URL(req.url).searchParams.get("q");
         if (!q) return json({ error: "missing ?q=" }, { status: 400 });
         const entry = lookupOutputEntry(q);
         if (!entry?.sound) return json({ error: "not found" }, { status: 404 });
-        try {
-          const file = Bun.file(entry.sound);
-          const exists = await file.exists();
-          if (!exists) return json({ error: "file not found" }, { status: 404 });
-          return new Response(file, {
-            headers: { "Content-Type": "audio/mpeg", ...CORS_HEADERS },
-          });
-        } catch {
-          return json({ error: "failed to read file" }, { status: 500 });
-        }
+        const url = assetUrl(entry.sound);
+        return new Response(null, { status: 302, headers: { Location: url, ...CORS_HEADERS } });
       },
     },
     "/api/sounds": {
@@ -747,11 +733,8 @@ const server = Bun.serve({
         if (!filename || filename.includes("/") || filename.includes("..")) {
           return new Response("Forbidden", { status: 403, headers: CORS_HEADERS });
         }
-        const file = Bun.file(`${import.meta.dir}/svg/${filename}`);
-        if (!(await file.exists())) return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
-        return new Response(file, {
-          headers: { "Content-Type": "image/svg+xml", ...CORS_HEADERS },
-        });
+        const url = assetUrl(`svg/${filename}`);
+        return new Response(null, { status: 302, headers: { Location: url, ...CORS_HEADERS } });
       },
     },
     "/api/translate": {
