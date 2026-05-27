@@ -42,6 +42,13 @@ import {
 } from "./cards";
 // import { analyzePronunciation, type PronunciationAnalysis } from "./pronunciation2";
 import { analyzePronunciation, type PronunciationAnalysis } from "./pronunciation";
+import {
+  listPassages,
+  getPassage,
+  createPassage,
+  deletePassage,
+} from "./passages";
+import { ingestUrl, IngestError } from "./ingest";
 
 const PRONUNCIATION_LOG_PATH = Bun.env.PRONUNCIATION_LOG ?? "pronunciation.log.jsonl";
 const pronunciationLog = Bun.file(PRONUNCIATION_LOG_PATH).writer();
@@ -663,6 +670,72 @@ const server = Bun.serve({
           if (entry?.sound) result.push({ word, sound: entry.sound });
         }
         return json(result);
+      },
+    },
+    // ── Reading passages (the 'read' page) ─────────────────────────────
+    "/api/passages": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: () => json(listPassages()),
+      POST: async (req) => {
+        const body = (await req.json()) as {
+          content?: string;
+          title?: string;
+          lang?: string;
+        };
+        const content = typeof body.content === "string" ? body.content : "";
+        if (!content.trim()) return json({ error: "missing content" }, { status: 400 });
+        return json(
+          createPassage({
+            content,
+            title: typeof body.title === "string" ? body.title : "",
+            lang: typeof body.lang === "string" ? body.lang : "",
+            kind: "text",
+          }),
+          { status: 201 },
+        );
+      },
+    },
+    "/api/passages/ingest": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      POST: async (req) => {
+        const body = (await req.json()) as { url?: string; lang?: string; title?: string };
+        const url = typeof body.url === "string" ? body.url.trim() : "";
+        if (!url) return json({ error: "missing url" }, { status: 400 });
+        try {
+          const result = await ingestUrl(url, { lang: body.lang });
+          const title =
+            typeof body.title === "string" && body.title.trim() ? body.title.trim() : result.title;
+          return json(
+            createPassage({
+              content: result.content,
+              title,
+              kind: result.kind,
+              source_url: result.source_url,
+              lang: result.lang,
+            }),
+            { status: 201 },
+          );
+        } catch (err) {
+          if (err instanceof IngestError) return json({ error: err.message }, { status: err.status });
+          return json({ error: (err as Error).message }, { status: 500 });
+        }
+      },
+    },
+    "/api/passages/:id": {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
+      GET: (req) => {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
+        const p = getPassage(id);
+        if (!p) return json({ error: "not found" }, { status: 404 });
+        return json(p);
+      },
+      DELETE: (req) => {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
+        const ok = deletePassage(id);
+        if (!ok) return json({ error: "not found" }, { status: 404 });
+        return json({ ok: true });
       },
     },
     "/health": () => json({ ok: true }),

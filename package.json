@@ -10,6 +10,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@extractus/article-extractor": "^8.1.0",
     "deepl-node": "^1.26.0",
     "fast-xml-parser": "^5.7.2"
   }
