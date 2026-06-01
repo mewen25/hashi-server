@@ -14,9 +14,15 @@ JMdict_e.gz
 jmdict.db
 dict_fts.db
 
-# local-only sqlite WAL/SHM sidecars (rebuilt at runtime)
+# writable runtime DBs live on the Railway volume and are seeded from R2 on
+# first boot — never bake local copies into the image.
+cards.db
+cards.db-wal
+cards.db-shm
+requests.db
 requests.db-wal
 requests.db-shm
+pronunciation.log.jsonl
 
 # served from R2 — not needed in the container
 audio
