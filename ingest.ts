@@ -4,6 +4,7 @@
 
 import { extract } from "@extractus/article-extractor";
 import type { PassageKind } from "./passages";
+import { filterJapanese } from "./japanese";
 
 export interface IngestResult {
   title: string;
@@ -196,13 +197,21 @@ async function fetchArticle(url: string): Promise<IngestResult> {
 
 export async function ingestUrl(
   rawUrl: string,
-  opts: { lang?: string } = {},
+  opts: { lang?: string; jaOnly?: boolean } = {},
 ): Promise<IngestResult> {
   const url = rawUrl.trim();
   if (!/^https?:\/\//i.test(url)) {
     throw new IngestError("url must start with http:// or https://", 400);
   }
   const videoId = parseYoutubeId(url);
-  if (videoId) return fetchYoutubeTranscript(videoId, url, opts.lang);
-  return fetchArticle(url);
+  const result = videoId
+    ? await fetchYoutubeTranscript(videoId, url, opts.lang)
+    : await fetchArticle(url);
+
+  if (opts.jaOnly) {
+    const filtered = filterJapanese(result.content);
+    if (!filtered) throw new IngestError("no Japanese text found in this source", 422);
+    result.content = filtered;
+  }
+  return result;
 }
