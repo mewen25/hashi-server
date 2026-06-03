@@ -43,5 +43,17 @@ echo "Uploading jp_sounds/ (39M, ~5400 files) → ${R2_BUCKET}/jp_sounds/"
   --size-only \
   --no-progress
 
+if [ -f "$BASE/mozc_dict.db" ]; then
+  echo "Uploading mozc_dict.db (85M) → ${R2_BUCKET}/mozc_dict.db"
+  "$BIN" s3 cp "$BASE/mozc_dict.db" "s3://${R2_BUCKET}/mozc_dict.db" \
+    --endpoint-url "$ENDPOINT" \
+    --content-type "application/x-sqlite3" \
+    --no-progress
+else
+  echo "skip mozc_dict.db (not found at $BASE/mozc_dict.db)"
+fi
+
 echo ""
-echo "Done. Set ASSETS_BASE_URL=https://pub-<hash>.r2.dev/ (or your custom domain) on the server."
+echo "Done."
+echo "  - Set ASSETS_BASE_URL=https://pub-<hash>.r2.dev/ (or your custom domain) on the server."
+echo "  - Set MOZC_DB_URL=https://pub-<hash>.r2.dev/mozc_dict.db as a Railway build variable."

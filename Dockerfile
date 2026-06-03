@@ -40,9 +40,23 @@ COPY . .
 # Overwrite any stray local copies with the freshly regenerated dbs.
 COPY --from=dict-builder /build/jmdict.db /build/dict_fts.db ./
 
+# mozc_dict.db (85M, read-only) has no build script, so it is fetched from
+# object storage at build time. ime.ts opens it at module load — if it is
+# missing the server crashes on boot. Set MOZC_DB_URL to the R2 object URL
+# (Railway exposes service variables as build args automatically).
+ARG MOZC_DB_URL=""
+RUN if [ -n "$MOZC_DB_URL" ]; then \
+        echo "Fetching mozc_dict.db from $MOZC_DB_URL" \
+        && curl -fsSL "$MOZC_DB_URL" -o /app/mozc_dict.db; \
+    else \
+        echo "WARNING: MOZC_DB_URL not set — mozc_dict.db will be missing and the server will crash on boot" >&2; \
+    fi
+
 # Audio, SVG, and jp_sounds assets are served from R2.
 # Set this to your R2 public bucket URL (e.g. https://pub-<hash>.r2.dev).
 ENV ASSETS_BASE_URL=""
 
 EXPOSE 3000
-CMD ["sh", "-c", "python segmenter_server.py & exec bun run index.ts"]
+# start.sh seeds the writable SQLite DBs into the persistent volume on first
+# boot, then launches the segmenter sidecar and the bun server.
+CMD ["sh", "/app/scripts/start.sh"]
