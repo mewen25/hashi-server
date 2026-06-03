@@ -49,6 +49,7 @@ import {
   deletePassage,
 } from "./passages";
 import { ingestUrl, IngestError } from "./ingest";
+import { filterJapanese } from "./japanese";
 import { assetUrl } from "./assets";
 
 const PRONUNCIATION_LOG_PATH = Bun.env.PRONUNCIATION_LOG ?? "pronunciation.log.jsonl";
@@ -667,9 +668,14 @@ const server = Bun.serve({
           content?: string;
           title?: string;
           lang?: string;
+          jaOnly?: boolean;
         };
-        const content = typeof body.content === "string" ? body.content : "";
+        let content = typeof body.content === "string" ? body.content : "";
         if (!content.trim()) return json({ error: "missing content" }, { status: 400 });
+        if (body.jaOnly) {
+          content = filterJapanese(content);
+          if (!content) return json({ error: "no Japanese text found" }, { status: 400 });
+        }
         return json(
           createPassage({
             content,
@@ -684,11 +690,16 @@ const server = Bun.serve({
     "/api/passages/ingest": {
       OPTIONS: () => new Response(null, { status: 204, headers: CORS_HEADERS }),
       POST: async (req) => {
-        const body = (await req.json()) as { url?: string; lang?: string; title?: string };
+        const body = (await req.json()) as {
+          url?: string;
+          lang?: string;
+          title?: string;
+          jaOnly?: boolean;
+        };
         const url = typeof body.url === "string" ? body.url.trim() : "";
         if (!url) return json({ error: "missing url" }, { status: 400 });
         try {
-          const result = await ingestUrl(url, { lang: body.lang });
+          const result = await ingestUrl(url, { lang: body.lang, jaOnly: body.jaOnly });
           const title =
             typeof body.title === "string" && body.title.trim() ? body.title.trim() : result.title;
           return json(
