@@ -3,7 +3,13 @@ import { test, expect } from "bun:test";
 // Use an isolated DB file for tests.
 process.env.CARDS_DB_PATH = `/tmp/passages-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`;
 
-import { createPassage, listPassages, getPassage, deletePassage } from "./passages";
+import {
+  createPassage,
+  listPassages,
+  getPassage,
+  deletePassage,
+  setPassageSeen,
+} from "./passages";
 
 test("createPassage stores text and returns the row", () => {
   const p = createPassage({ content: "これはテストです。", title: "test", lang: "ja" });
@@ -44,4 +50,13 @@ test("deletePassage removes the row", () => {
   expect(deletePassage(p.id)).toBe(true);
   expect(getPassage(p.id)).toBeNull();
   expect(deletePassage(p.id)).toBe(false);
+});
+
+test("new passages start unseen; setPassageSeen toggles the flag", () => {
+  const p = createPassage({ content: "mark me read" });
+  expect(p.seen).toBe(0);
+  expect(setPassageSeen(p.id, true)?.seen).toBe(1);
+  expect(getPassage(p.id)?.seen).toBe(1);
+  expect(setPassageSeen(p.id, false)?.seen).toBe(0);
+  expect(setPassageSeen(999999, true)).toBeNull();
 });

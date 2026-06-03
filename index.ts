@@ -47,6 +47,7 @@ import {
   getPassage,
   createPassage,
   deletePassage,
+  setPassageSeen,
 } from "./passages";
 import { ingestUrl, IngestError } from "./ingest";
 import { filterJapanese } from "./japanese";
@@ -69,7 +70,7 @@ import { loadNativeAudioBytes } from "./nativeAudio";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -724,6 +725,15 @@ const server = Bun.serve({
         const id = Number(req.params.id);
         if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
         const p = getPassage(id);
+        if (!p) return json({ error: "not found" }, { status: 404 });
+        return json(p);
+      },
+      PATCH: async (req) => {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return json({ error: "invalid id" }, { status: 400 });
+        const body = (await req.json()) as { seen?: boolean };
+        const seen = body.seen === undefined ? true : !!body.seen;
+        const p = setPassageSeen(id, seen);
         if (!p) return json({ error: "not found" }, { status: 404 });
         return json(p);
       },

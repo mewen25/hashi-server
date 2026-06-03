@@ -15,10 +15,19 @@ db.exec(`
     content TEXT NOT NULL,
     lang TEXT NOT NULL DEFAULT '',
     char_count INTEGER NOT NULL DEFAULT 0,
+    seen INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   )
 `);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_passages_created ON passages(created_at)`);
+
+// Migrate pre-existing tables that predate the `seen` column.
+{
+  const cols = db.query<{ name: string }, []>(`PRAGMA table_info(passages)`).all();
+  if (!cols.some((c) => c.name === "seen")) {
+    db.exec(`ALTER TABLE passages ADD COLUMN seen INTEGER NOT NULL DEFAULT 0`);
+  }
+}
 
 export type PassageKind = "text" | "article" | "video";
 
@@ -30,6 +39,7 @@ export interface Passage {
   content: string;
   lang: string;
   char_count: number;
+  seen: number; // 0 | 1
   created_at: number;
 }
 
@@ -46,7 +56,7 @@ function preview(content: string): string {
 export function listPassages(): PassageSummary[] {
   const rows = db
     .query<Omit<Passage, "content"> & { content: string }, []>(
-      `SELECT id, title, kind, source_url, content, lang, char_count, created_at
+      `SELECT id, title, kind, source_url, content, lang, char_count, seen, created_at
        FROM passages ORDER BY created_at DESC`,
     )
     .all();
@@ -89,4 +99,9 @@ export function createPassage(input: {
 
 export function deletePassage(id: number): boolean {
   return db.run(`DELETE FROM passages WHERE id = ?`, [id]).changes > 0;
+}
+
+export function setPassageSeen(id: number, seen: boolean): Passage | null {
+  db.run(`UPDATE passages SET seen = ? WHERE id = ?`, [seen ? 1 : 0, id]);
+  return getPassage(id);
 }
